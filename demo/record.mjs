@@ -88,8 +88,9 @@ function quiet(config) {
 
 function serve(script) {
   const theme = JSON.stringify({ background: '#1f1f1f', foreground: '#e6e6e6', cursor: '#e6e6e6' })
-  // The DOM renderer: text the capture draws sharp at any pixel density.
-  const args = ['-p', String(PORT), '-W', '-o', '-t', `fontSize=${FONT_SIZE}`, '-t', 'fontFamily=Menlo, monospace', '-t', 'rendererType=dom']
+  // The canvas renderer draws block characters to fill their cells, so the logo and the bars come out whole;
+  // the DOM renderer leaves them to the font, which draws them short of the line.
+  const args = ['-p', String(PORT), '-W', '-o', '-t', `fontSize=${FONT_SIZE}`, '-t', 'fontFamily=Menlo, monospace', '-t', 'rendererType=canvas']
   args.push('-t', 'disableLeaveAlert=true', '-t', 'disableResizeOverlay=true', '-t', `theme=${theme}`, script)
   const child = spawn('ttyd', args, { stdio: 'ignore' })
   const exited = new Promise(resolve => child.once('exit', resolve))
