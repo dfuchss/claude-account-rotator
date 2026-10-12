@@ -86,7 +86,6 @@ function world(on: On, w: World, store: Record<string, unknown>): MockClock {
   on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200_000 }, rateLimits: w.limits } }))
   on('session.measure', (_$, e) => ({ changed: e.changed }))
   on('classic.StopFailure', () => ({}))
-  on('command.register', () => ({ value: { command: 'accounts' } }))
   on('ui.toast', (_$, e) => {
     w.toasts.push(e.text)
     return { value: undefined }
@@ -148,7 +147,7 @@ test('a login with nothing in the keychain shows as needing a sign-in, with one 
       component: 'AbovePrompt',
       props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 9 }, view: {} },
     })
-    expect(await band.find({ text: /login 2 \(two@example.com\) needs a sign-in \(not signed in\)/ })).toBeDefined()
+    expect(await band.find({ text: /account 2 \(two@example.com\) needs a sign-in \(not signed in\)/ })).toBeDefined()
     expect(await band.find({ key: 'sign-in-all' })).toBeDefined()
     await band.unmount()
   }
@@ -337,12 +336,12 @@ test('a switch held back for a token about to refresh is said once and made once
   await clock.settle()
   await clock.advance(2 * 60_000)
   expect(w.envSets).toEqual([])
-  expect(w.toasts.filter(t => /Switching to Claude login 2/.test(t))).toHaveLength(1)
+  expect(w.toasts.filter(t => /Switching to Claude account 2/.test(t))).toHaveLength(1)
   // Claude Code refreshes the token: the next try goes through, once.
   w.keychain['Claude Code-credentials'] = blob('tok-1', NOW + 8 * HOUR)
   await clock.advance(3 * 60_000)
   expect(w.envSets).toEqual([{ name: 'CLAUDE_SECURESTORAGE_CONFIG_DIR', value: SLOT2 }])
-  expect(w.toasts.filter(t => /Switched to Claude login 2/.test(t))).toHaveLength(1)
+  expect(w.toasts.filter(t => /Switched to Claude account 2/.test(t))).toHaveLength(1)
   await pane.unmount()
 })
 

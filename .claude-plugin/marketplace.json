@@ -4,7 +4,7 @@
     "name": "Ivo Kund"
   },
   "metadata": {
-    "description": "Rotates Claude Code between your Claude logins as their usage limits fill."
+    "description": "Rotates Claude Code between your Claude accounts as their usage limits fill."
   },
   "plugins": [
     {

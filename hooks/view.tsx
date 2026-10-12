@@ -320,7 +320,7 @@ export function Band(ui: Ui, view: View, now: number, act: Actions) {
     return (
       <Box flexDirection="row" columnGap={2}>
         <Text color="warning">
-          ◌ Login {signingIn.id}: in your browser, approve as {signingIn.email ?? 'the account to add'} and pick the
+          ◌ Account {signingIn.id}: in your browser, approve as {signingIn.email ?? 'the account to add'} and pick the
           organization. Wrong account there? Sign out of claude.ai in another tab, then reload the sign-in page.
         </Text>
         <Button key="cancel-sign-in" onPress={act.cancelSignIn}>Cancel</Button>
@@ -334,7 +334,7 @@ export function Band(ui: Ui, view: View, now: number, act: Actions) {
     return (
       <Box flexDirection="row" columnGap={2}>
         <Text color="error">
-          ⚠ Claude login {names} needs a sign-in{why?.kind === 'login-needed' ? ` (${why.why})` : ''}.
+          ⚠ Claude account {names} needs a sign-in{why?.kind === 'login-needed' ? ` (${why.why})` : ''}.
         </Text>
         <Button key="sign-in-all" variant="primary" hotkey="s" onPress={act.signInAll}>
           {locked.length > 1 ? 'Sign in all' : 'Sign in'}
@@ -350,7 +350,7 @@ export function Band(ui: Ui, view: View, now: number, act: Actions) {
     const at = nextReset(view, now)
     return (
       <Text color="warning">
-        Every Claude login is near its limit{at === undefined ? '' : `; the next frees up ${untilText(at, now)}`}.
+        Every Claude account is near its limit{at === undefined ? '' : `; the next frees up ${untilText(at, now)}`}.
       </Text>
     )
   }
@@ -456,7 +456,7 @@ function accountRows(ui: Ui, view: View, a: Account, now: number, act: Actions) 
             <Text bold={isActive} dimColor={!isActive}>{a.id}</Text>
           </Box>
           <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-            <Text bold={isActive} dimColor={!isActive}>{a.email ?? (a.slot === '' ? 'your normal login' : 'not signed in yet')}</Text>
+            <Text bold={isActive} dimColor={!isActive}>{a.email ?? (a.slot === '' ? 'your normal account' : 'not signed in yet')}</Text>
             {a.orgName !== undefined && <Text dimColor>{a.orgName}{a.plan ? ` · ${a.plan}` : ''}</Text>}
           </Box>
         </Box>
@@ -477,21 +477,21 @@ function accountRows(ui: Ui, view: View, a: Account, now: number, act: Actions) 
 function rule(fill: Fill): string {
   const when =
     fill === 'left'
-      ? `Once the login in use has ${100 - LEAVE_FIVE_HOUR}% of its 5-hour window or ${100 - LEAVE_SEVEN_DAY}% of its week left`
-      : `Once the login in use has used ${LEAVE_FIVE_HOUR}% of its 5-hour window or ${LEAVE_SEVEN_DAY}% of its week`
-  return `${when}, moves to the login with the most room right now.`
+      ? `Once the account in use has ${100 - LEAVE_FIVE_HOUR}% of its 5-hour window or ${100 - LEAVE_SEVEN_DAY}% of its week left`
+      : `Once the account in use has used ${LEAVE_FIVE_HOUR}% of its 5-hour window or ${LEAVE_SEVEN_DAY}% of its week`
+  return `${when}, moves to the account with the most room right now.`
 }
 
 /**
- * The pane: when the rotation moves on, then every login, its usage and what
+ * The pane: when the rotation moves on, then every account, its usage and what
  * can be done with it, then the footer's settings, each group in its box.
  */
 export function Pane(ui: Ui, view: View, now: number, act: Actions) {
   const { Box, Text, Button } = ui
-  const logins = [
+  const accounts = [
     ...view.accounts.map(a => accountRows(ui, view, a, now, act)),
     <Box key="add-row" flexDirection="row" columnGap={2}>
-      <Button key="add" onPress={act.add}>+ Add a login</Button>
+      <Button key="add" onPress={act.add}>+ Add an account</Button>
       {view.accounts.length > 1 && <Button key="rotate" onPress={act.rotate}>Rotate now</Button>}
       {needsSignIn(view).length > 1 && <Button key="pane-sign-in-all" variant="primary" onPress={act.signInAll}>Sign in all</Button>}
     </Box>,
@@ -499,7 +499,7 @@ export function Pane(ui: Ui, view: View, now: number, act: Actions) {
   return (
     <Box flexDirection="column" rowGap={1}>
       <Text dimColor>{rule(view.footer.fill)}</Text>
-      {section(ui, 'logins', 'Logins', logins)}
+      {section(ui, 'accounts', 'Accounts', accounts)}
       {FooterSettings(ui, view, act)}
     </Box>
   )

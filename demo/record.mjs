@@ -1,6 +1,6 @@
 // Records demo/demo.gif: a real Claude Code session with the mod, fed imitated
-// logins by the harness in demo/harness, driven with real clicks. Two scenes:
-// the camera close on the footer while the login in use runs low, pulling
+// accounts by the harness in demo/harness, driven with real clicks. Two scenes:
+// the camera close on the footer while the account in use runs low, pulling
 // back so the session's move to another shows with the notice saying so;
 // then the panel trying the footer's top row as bars, pies and braille.
 //
@@ -9,7 +9,7 @@
 //   DEMO_LOGIN_DIR=~/.claude/accounts/3 node record.mjs [work dir]
 //
 // Everything the mod shows is imitated and no prompt is sent; the session
-// still starts as a real login, DEMO_LOGIN_DIR's (a login folder the mod
+// still starts as a real account, DEMO_LOGIN_DIR's (an account folder the mod
 // made) else your normal one, whose plan the header shows. Needs Claude Code
 // on PATH. The terminal is drawn at three times the GIF's size, font and all,
 // so the camera, applied to the frames afterwards, zooms in and stays sharp.
@@ -37,7 +37,7 @@ const FPS = 10
 const CAPTURE_FPS = 15
 const PORT = 7690
 const LOGIN_DIR = process.env.DEMO_LOGIN_DIR ?? ''
-/** The file whose making starts the harness draining the login in use. */
+/** The file whose making starts the harness draining the account in use. */
 const DRAIN = join(WORK, 'drain')
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -264,7 +264,9 @@ async function encode(frames, out) {
   const run = promisify(execFile)
   const scale = `scale=${OUTPUT.width}:${OUTPUT.height}:flags=lanczos`
   await pool(jobs, 8, job => run('ffmpeg', ['-v', 'error', '-y', '-i', job.from, '-vf', `${job.crop},${scale}`, job.to]))
-  execFileSync('gifski', ['--fps', String(FPS), '--quality', '90', '-o', out, ...jobs.map(job => job.to)], { stdio: 'inherit' })
+  // Full quality: below it gifski keeps pixels from earlier frames that differ only a little, which leaves
+  // faint traces of the zoomed footer on the dark background once the camera pulls back.
+  execFileSync('gifski', ['--fps', String(FPS), '--quality', '100', '-o', out, ...jobs.map(job => job.to)], { stdio: 'inherit' })
 }
 
 /** One short session, so a fresh config has seen its first-run notices and cached its remote config. */
@@ -289,7 +291,7 @@ async function take(browser, script) {
   const stop = await capture(page)
   await sleep(1200)
 
-  // 1. Close on the footer, its rows named under the pointer: the login in use runs low.
+  // 1. Close on the footer, its rows named under the pointer: the account in use runs low.
   // The camera is back on the whole screen by the time the session moves to the one with
   // the most room, so the footer's change and the notice at the top show together.
   camera(FOOTER)
@@ -301,7 +303,7 @@ async function take(browser, script) {
   await page.mouse.move(PAGE.width * 0.55, PAGE.height * 0.55, { steps: 16 })
   await sleep(600)
   writeFileSync(DRAIN, '')
-  await waitFor(page, 'Switched to Claude login 2')
+  await waitFor(page, 'Switched to Claude account 2')
   camera(FULL, 1100, Date.now() - 1700)
   await sleep(3500)
 

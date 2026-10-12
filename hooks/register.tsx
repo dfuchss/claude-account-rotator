@@ -51,7 +51,7 @@ const CONFIRM_GIVE_UP_MS = 4 * 60_000
  */
 const REFRESH_GUARD_MS = 8 * 60_000
 const CONTINUE =
-  'Claude Code switched to another of your Claude logins because the previous one hit its usage limit or lost its sign-in. Continue where you left off.'
+  'Claude Code switched to another of your Claude accounts because the previous one hit its usage limit or lost its sign-in. Continue where you left off.'
 
 const viewAtom = atom({ plugin: 'account-rotator', key: 'view' } as const, EMPTY_VIEW)
 
@@ -199,7 +199,7 @@ async function useSlot($: Host, slot: string): Promise<void> {
 // ---------------------------------------------------------------- checks and switching
 
 async function announceLockout($: Host, account: Account, why: string): Promise<void> {
-  const text = `Claude login ${label(account)} needs a sign-in (${why}). Click ⚠${account.id} under the prompt.`
+  const text = `Claude account ${label(account)} needs a sign-in (${why}). Click ⚠${account.id} under the prompt.`
   $.ui.toast(text, { timeoutMs: 8000 })
   await $.ui.notify(text, { title: TITLE })
 }
@@ -210,7 +210,7 @@ async function checkAccount($: Host, account: Account): Promise<void> {
   if (signingIn === account.id) return
   const stored = await readStored($, account.slot)
   if (stored.state === 'unreadable') {
-    tell($, `Could not read Claude login ${account.id} from the keychain (exit ${stored.code}); is it locked?`)
+    tell($, `Could not read Claude account ${account.id} from the keychain (exit ${stored.code}); is it locked?`)
     return
   }
   const credential = stored.state === 'present' ? stored.credential : undefined
@@ -218,7 +218,7 @@ async function checkAccount($: Host, account: Account): Promise<void> {
   if (health.kind === 'ok' && credential !== undefined && credential.expiresAt > now + 60_000) {
     const usage = await fetchUsage($, credential.accessToken)
     if (usage.kind === 'rejected') health = { kind: 'login-needed', why: 'sign-in rejected' }
-    if (usage.kind === 'failed') await debug($, `usage for login ${account.id}: HTTP ${usage.status}`)
+    if (usage.kind === 'failed') await debug($, `usage for account ${account.id}: HTTP ${usage.status}`)
     if (usage.kind === 'ok') {
       const reading = readingFromUsage(usage.body, now)
       if (reading !== undefined) await saveReading($, account.id, reading)
@@ -235,7 +235,7 @@ async function checkAll($: Host): Promise<void> {
     try {
       await checkAccount($, account)
     } catch (error) {
-      await debug($, `checking login ${account.id} failed: ${String(error)}`)
+      await debug($, `checking account ${account.id} failed: ${String(error)}`)
     }
   }
   await maybeRotate($)
@@ -243,13 +243,13 @@ async function checkAll($: Host): Promise<void> {
 
 /** Why the login in use is left, counted the way the footer shows it: room left, or what is used. */
 function whyLeave(view: View, now: number): string {
-  if (view.health[view.activeId]?.kind === 'login-needed') return `login ${view.activeId} needs a sign-in`
+  if (view.health[view.activeId]?.kind === 'login-needed') return `account ${view.activeId} needs a sign-in`
   const r = view.readings[view.activeId]
   const five = windowPct(r?.fiveHour, now) ?? 0
   const [window, used] = five >= LEAVE_FIVE_HOUR ? ['5-hour window', five] : ['week', windowPct(r?.sevenDay, now) ?? 0]
   return view.footer.fill === 'left'
-    ? `login ${view.activeId} has ${Math.round(100 - used)}% of its ${window} left`
-    : `login ${view.activeId} has used ${Math.round(used)}% of its ${window}`
+    ? `account ${view.activeId} has ${Math.round(100 - used)}% of its ${window} left`
+    : `account ${view.activeId} has used ${Math.round(used)}% of its ${window}`
 }
 
 /** Once the active login is spent or locked out, moves to the one that can serve the most right now. */
@@ -272,7 +272,7 @@ async function switchTo($: Host, target: Account, why: string): Promise<boolean>
     const credential = stored.state === 'present' ? stored.credential : undefined
     if (credential !== undefined && credential.expiresAt > now && credential.expiresAt - now < REFRESH_GUARD_MS) {
       if (held === undefined) {
-        tell($, `Switching to Claude login ${target.id} in a few minutes, once login ${active.id}'s token has refreshed.`)
+        tell($, `Switching to Claude account ${target.id} in a few minutes, once account ${active.id}'s token has refreshed.`)
         const retry = () => {
           if (held !== undefined) void switchTo($, held.target, held.why)
         }
@@ -290,7 +290,7 @@ async function switchTo($: Host, target: Account, why: string): Promise<boolean>
     pending: { id: target.id, from: v.activeId, since: now },
     removing: undefined,
   }))
-  $.ui.toast(`Switched to Claude login ${label(target)}: ${why}.`, { timeoutMs: 6000 })
+  $.ui.toast(`Switched to Claude account ${label(target)}: ${why}.`, { timeoutMs: 6000 })
   return true
 }
 
@@ -311,7 +311,7 @@ async function settlePending($: Host, isResponse: boolean): Promise<void> {
     await setView($, v => ({ ...v, pending: undefined }))
   } else if (isResponse && now - pending.since > CONFIRM_GIVE_UP_MS) {
     await setView($, v => ({ ...v, pending: undefined }))
-    tell($, `The switch to Claude login ${pending.id} has not shown in responses; usage still looks like login ${pending.from}.`)
+    tell($, `The switch to Claude account ${pending.id} has not shown in responses; usage still looks like account ${pending.from}.`)
   }
 }
 
@@ -380,7 +380,7 @@ async function signIn($: Host, account: Account): Promise<void> {
   const code = await child.result.then(r => r.code, () => null)
   await saveHealth($, account.id, { kind: 'login-needed', why: 'sign-in not finished' })
   if (code !== 0) {
-    tell($, `Sign-in for Claude login ${account.id} did not finish${errors.trim() ? `: ${errors.trim().slice(0, 160)}` : '.'}`)
+    tell($, `Sign-in for Claude account ${account.id} did not finish${errors.trim() ? `: ${errors.trim().slice(0, 160)}` : '.'}`)
     return
   }
   await adoptSignIn($, account)
@@ -395,7 +395,7 @@ async function adoptSignIn($: Host, account: Account): Promise<void> {
     await saveHealth($, account.id, { kind: 'login-needed', why: `that was login ${label(twin)} again` })
     tell(
       $,
-      `Claude login ${account.id} signed in as login ${label(twin)}. Sign out of claude.ai in your browser (or pick another organization), then sign in again.`,
+      `Claude account ${account.id} signed in as account ${label(twin)}. Sign out of claude.ai in your browser (or pick another organization), then sign in again.`,
     )
     return
   }
@@ -432,7 +432,7 @@ async function addAccount($: Host): Promise<void> {
   const accounts = await loadAccounts($)
   const id = freeId(accounts)
   const slot = `${(await $.env.get('HOME')) ?? ''}/.claude/accounts/${id}`
-  await $.fs.write(`${slot}/README`, `Claude Code login slot ${id}, kept by the account-rotator mod.\n`)
+  await $.fs.write(`${slot}/README`, `Claude account ${id}, kept by the account-rotator mod.\n`)
   await saveAccounts($, [...accounts, { id, slot }])
   await saveHealth($, id, { kind: 'login-needed', why: 'not signed in yet' })
   await signInOne($, id)
@@ -445,8 +445,8 @@ async function removeAccount($: Host, id: string): Promise<void> {
   if (account === undefined || account.slot === '') return
   if (view.activeId === id) {
     const other = view.accounts.find(a => a.id !== id && view.health[a.id]?.kind === 'ok')
-    if (other === undefined || !(await switchTo($, other, `login ${id} is being removed`))) {
-      tell($, `Claude login ${id} is in use and no other login can take over yet; not removed.`)
+    if (other === undefined || !(await switchTo($, other, `account ${id} is being removed`))) {
+      tell($, `Claude account ${id} is in use and no other account can take over yet; not removed.`)
       return
     }
   }
@@ -475,7 +475,7 @@ function togglePane($: Host): Promise<unknown> {
 async function rotate($: Host): Promise<void> {
   const view = await getView($)
   const target = pickTarget(view, await $.clock.now())
-  if (target === undefined) tell($, 'No other Claude login can take over right now.')
+  if (target === undefined) tell($, 'No other Claude account can take over right now.')
   else await switchTo($, target, 'you pressed Rotate now')
 }
 
@@ -535,10 +535,6 @@ async function boot($: Host): Promise<void> {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    await $.command.register({
-      name: 'accounts',
-      description: 'Your Claude logins: usage, which one is in use, sign in or add one',
-    })
     void boot($).catch(error => debug($, `start failed: ${String(error)}`))
     void $.ui.panes().then(panes => {
       isPaneShown = panes.some(p => p.id === PANE && p.isShown)
@@ -566,12 +562,6 @@ export const register: Register = on => {
     void onStopFailure($, e.error).catch(error => debug($, `stop failure handling failed: ${String(error)}`))
     return next(e)
   }).catch(($, e, next) => next(e))
-
-  on('command.run', { command: 'accounts' }, async $ => {
-    isPaneShown = true
-    await $.ui.open({ id: PANE, title: TITLE, focus: true, columns: PANE_COLUMNS })
-    return { text: 'Opened the Claude accounts pane.' }
-  })
 
   on('ui.close', async ($, e, next) => {
     if (e.id === PANE) isPaneShown = false
