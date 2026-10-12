@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { View } from '../types'
-import { availableNow, credentialFrom, healthOf, keychainItem, pickTarget, pie, readingFromUsage, shouldLeave, weekColor, windowPct } from './model'
+import { DEFAULT_FOOTER, availableNow, braille, credentialFrom, footerStyleFrom, healthOf, keychainItem, pickTarget, pie, readingFromUsage, shouldLeave, roomColor, windowPct } from './model'
 
 const NOW = Date.parse('2026-10-12T10:00:00Z')
 const LATER = '2026-10-12T12:00:00Z'
@@ -19,6 +19,7 @@ function view(readings: Record<string, [number, number]>, health: Record<string,
     ),
     health: Object.fromEntries(ids.map(id => [id, health[id] ?? { kind: 'ok' as const }])),
     activeId: '1',
+    footer: DEFAULT_FOOTER,
   }
 }
 
@@ -80,13 +81,29 @@ test('names keychain entries as Claude Code does', async () => {
 
 const EXPECTED_SLOT2_HASH = 'a296c876'
 
-test('the footer colors a week from green with all of it left, through yellow, to red with none', () => {
-  expect(weekColor(100)).toBe('#36e236')
-  expect(weekColor(50)).toBe('#e2e236')
-  expect(weekColor(0)).toBe('#e23636')
+test('room left is colored green with all of it, through yellow, to red with none', () => {
+  expect(roomColor(100)).toBe('#36e236')
+  expect(roomColor(50)).toBe('#e2e236')
+  expect(roomColor(0)).toBe('#e23636')
 })
 
 test('a pie fills by quarters', () => {
   expect([0, 12, 13, 50, 87, 88, 100].map(pie)).toEqual(['○', '○', '◔', '◑', '◕', '●', '●'])
   expect(pie(undefined)).toBe('·')
+})
+
+test('a braille cell fills from one dot to eight', () => {
+  expect([0, 14, 50, 93, 100].map(braille)).toEqual(['⡀', '⣀', '⣦', '⣿', '⣿'])
+})
+
+test('a stored footer look keeps what it knows and defaults the rest', () => {
+  expect(footerStyleFrom({ session: 'pie', week: 'nope', weekPercent: false, active: 'bright', fill: 'used' })).toEqual({
+    session: 'pie',
+    week: 'bars',
+    sessionPercent: true,
+    weekPercent: false,
+    active: 'lines',
+    fill: 'used',
+  })
+  expect(footerStyleFrom(undefined)).toEqual({ session: 'braille', week: 'bars', sessionPercent: true, weekPercent: true, active: 'lines', fill: 'left' })
 })

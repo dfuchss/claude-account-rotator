@@ -6,20 +6,21 @@ import type {
   ProcessSpawnResult,
   Register,
   SessionRateLimit,
+  Timer,
 } from 'claude-code'
 
-import type { Account, Health, Reading, View } from '../types'
+import type { Account, FooterStyle, Health, Reading, View } from '../types'
 import {
   EMPTY_VIEW,
   LEAVE_FIVE_HOUR,
   credentialFrom,
+  footerStyleFrom,
   freeId,
   healthOf,
   identityFromStatus,
   keychainItem,
   keychainUser,
   label,
-  nextReset,
   pickTarget,
   readingFromLimits,
   readingFromUsage,
@@ -27,7 +28,6 @@ import {
   sameUsage,
   shouldLeave,
   slotEnv,
-  untilText,
   windowPct,
 } from './model'
 import type { Credential, Identity } from './model'
@@ -38,6 +38,8 @@ type Host = EngineInterface
 
 const PANE = 'claude-accounts'
 const TITLE = 'Claude accounts'
+/** The dock width the pane asks for: a login's line, its buttons and its usage rows fit on one line each. */
+const PANE_COLUMNS = 64
 /** Claude Code caches a keychain read for 30 s, so a switch lands within this. */
 const SETTLE_MS = 35_000
 /** A switch no response has shown after this long is reported as not taken. */
@@ -53,20 +55,31 @@ const CONTINUE =
 
 const viewAtom = atom({ plugin: 'account-rotator', key: 'view' } as const, EMPTY_VIEW)
 
+/**
+ * Whether this session's pane shows. A press opens or closes it in its own
+ * turn, with no read before: the engine counts an open as the person's only
+ * there, and places it at any width; one made after an await waits undrawn
+ * below 144 columns. Kept in step with closes by the person and with reloads.
+ */
+let isPaneShown = false
 /** The `claude auth login` child of the sign-in under way, so Cancel can end it. */
 let running: HookStream<ProcessSpawnChunk, ProcessSpawnResult> | undefined
 /** The login this session is signing in; a stored 'logging-in' from a session that died is checked again. */
 let signingIn: string | undefined
 let signInQueue: Promise<void> = Promise.resolve()
+/** A switch the refresh guard holds back: the latest one asked for, tried again each minute until it goes. */
+let held: { target: Account; why: string; timer: Timer } | undefined
 
 // ---------------------------------------------------------------- state
 // The view is this session's; the store is one JSON file every session of the
-// mod shares: the list of logins, and each login's last reading and health
-// under a key of its own, so sessions writing different logins never collide.
+// mod shares: the list of logins, each login's last reading and health under a
+// key of its own, so sessions writing different logins never collide, and the
+// footer's look.
 
 const getView = ($: Host): Promise<View> => read($, viewAtom)
 const setView = ($: Host, fn: (v: View) => View): Promise<View> => update($, viewAtom, fn)
-const note = ($: Host, text: string) => setView($, v => ({ ...v, note: text }))
+/** Something the person should know that nothing on screen says: a toast, on screen for a while. */
+const tell = ($: Host, text: string) => $.ui.toast(text, { timeoutMs: 8000 })
 const debug = ($: Host, text: string) => $.ui.log(`account-rotator: ${text}`, { to: 'debug' })
 
 function isAccount(value: unknown): value is Account {
@@ -109,6 +122,7 @@ async function mergeStore($: Host): Promise<void> {
     const h = await $.store.get(`health:${a.id}`)
     if (typeof h === 'object' && h !== null && typeof (h as Health).kind === 'string') health[a.id] = h as Health
   }
+  const footer = footerStyleFrom(await $.store.get('footer'))
   await setView($, v => {
     const nextReadings: Record<string, Reading> = {}
     const nextHealth: Record<string, Health> = {}
@@ -121,8 +135,15 @@ async function mergeStore($: Host): Promise<void> {
       const h = signingIn === a.id ? own : (health[a.id] ?? own)
       if (h !== undefined) nextHealth[a.id] = h
     }
-    return { ...v, accounts, readings: nextReadings, health: nextHealth }
+    return { ...v, accounts, readings: nextReadings, health: nextHealth, footer }
   })
+}
+
+/** Changes the footer's look for every session. */
+async function setFooter($: Host, change: Partial<FooterStyle>): Promise<void> {
+  const footer = { ...(await getView($)).footer, ...change }
+  await $.store.set('footer', footer)
+  await setView($, v => ({ ...v, footer }))
 }
 
 // ---------------------------------------------------------------- host
@@ -189,7 +210,7 @@ async function checkAccount($: Host, account: Account): Promise<void> {
   if (signingIn === account.id) return
   const stored = await readStored($, account.slot)
   if (stored.state === 'unreadable') {
-    await note($, `Could not read login ${account.id} from the keychain (exit ${stored.code}); is it locked?`)
+    tell($, `Could not read Claude login ${account.id} from the keychain (exit ${stored.code}); is it locked?`)
     return
   }
   const credential = stored.state === 'present' ? stored.credential : undefined
@@ -220,12 +241,15 @@ async function checkAll($: Host): Promise<void> {
   await maybeRotate($)
 }
 
+/** Why the login in use is left, counted the way the footer shows it: room left, or what is used. */
 function whyLeave(view: View, now: number): string {
   if (view.health[view.activeId]?.kind === 'login-needed') return `login ${view.activeId} needs a sign-in`
   const r = view.readings[view.activeId]
   const five = windowPct(r?.fiveHour, now) ?? 0
-  if (five >= LEAVE_FIVE_HOUR) return `login ${view.activeId} is at ${five}% of its 5-hour limit`
-  return `login ${view.activeId} is at ${windowPct(r?.sevenDay, now) ?? 0}% of its weekly limit`
+  const [window, used] = five >= LEAVE_FIVE_HOUR ? ['5-hour window', five] : ['week', windowPct(r?.sevenDay, now) ?? 0]
+  return view.footer.fill === 'left'
+    ? `login ${view.activeId} has ${Math.round(100 - used)}% of its ${window} left`
+    : `login ${view.activeId} has used ${Math.round(used)}% of its ${window}`
 }
 
 /** Once the active login is spent or locked out, moves to the one that can serve the most right now. */
@@ -233,13 +257,9 @@ async function maybeRotate($: Host): Promise<boolean> {
   const now = await $.clock.now()
   const view = await getView($)
   if (view.pending !== undefined || !shouldLeave(view, now)) return false
+  // With none to move to, the band above the prompt says when the next login frees up.
   const target = pickTarget(view, now)
-  if (target === undefined) {
-    const at = nextReset(view, now)
-    await note($, `Every login is near its limit${at === undefined ? '' : `; the next frees up ${untilText(at, now)}`}.`)
-    return false
-  }
-  return switchTo($, target, whyLeave(view, now))
+  return target === undefined ? false : switchTo($, target, whyLeave(view, now))
 }
 
 /** Points this session at `target`; false while the refresh guard holds it back. */
@@ -251,18 +271,24 @@ async function switchTo($: Host, target: Account, why: string): Promise<boolean>
     const stored = await readStored($, active.slot)
     const credential = stored.state === 'present' ? stored.credential : undefined
     if (credential !== undefined && credential.expiresAt > now && credential.expiresAt - now < REFRESH_GUARD_MS) {
-      await note($, `Switching to login ${target.id} once login ${active.id}'s token has refreshed.`)
-      $.clock.after(60_000, () => void switchTo($, target, why))
+      if (held === undefined) {
+        tell($, `Switching to Claude login ${target.id} in a few minutes, once login ${active.id}'s token has refreshed.`)
+        const retry = () => {
+          if (held !== undefined) void switchTo($, held.target, held.why)
+        }
+        held = { target, why, timer: $.clock.every(60_000, retry) }
+      } else held = { ...held, target, why }
       return false
     }
   }
+  held?.timer.cancel()
+  held = undefined
   await useSlot($, target.slot)
   await setView($, v => ({
     ...v,
     activeId: target.id,
     pending: { id: target.id, from: v.activeId, since: now },
     removing: undefined,
-    note: `Switched to login ${label(target)}: ${why}.`,
   }))
   $.ui.toast(`Switched to Claude login ${label(target)}: ${why}.`, { timeoutMs: 6000 })
   return true
@@ -270,9 +296,10 @@ async function switchTo($: Host, target: Account, why: string): Promise<boolean>
 
 /**
  * After a switch: which login answered the latest response? The new one
- * (confirmed), still the old one after a few minutes (reported), or too soon to say.
+ * (confirmed), or too soon to say. Only a response still answered by the old
+ * login minutes later is reported: an idle session has no new response to tell.
  */
-async function settlePending($: Host): Promise<void> {
+async function settlePending($: Host, isResponse: boolean): Promise<void> {
   const { pending, accounts } = await getView($)
   if (pending === undefined) return
   const now = await $.clock.now()
@@ -281,13 +308,10 @@ async function settlePending($: Host): Promise<void> {
   const target = accounts.find(a => a.id === pending.id)
   if (target !== undefined) await checkAccount($, target)
   if (sameUsage(reading, (await getView($)).readings[pending.id], now)) {
-    await setView($, v => ({ ...v, pending: undefined, note: `Requests now go out as login ${label(target)}.` }))
-  } else if (now - pending.since > CONFIRM_GIVE_UP_MS) {
-    await setView($, v => ({
-      ...v,
-      pending: undefined,
-      note: `The switch to login ${pending.id} has not shown in responses; usage still looks like login ${pending.from}.`,
-    }))
+    await setView($, v => ({ ...v, pending: undefined }))
+  } else if (isResponse && now - pending.since > CONFIRM_GIVE_UP_MS) {
+    await setView($, v => ({ ...v, pending: undefined }))
+    tell($, `The switch to Claude login ${pending.id} has not shown in responses; usage still looks like login ${pending.from}.`)
   }
 }
 
@@ -295,7 +319,7 @@ async function settlePending($: Host): Promise<void> {
 async function onMeasure($: Host, limits: readonly SessionRateLimit[]): Promise<void> {
   const view = await getView($)
   if (view.pending !== undefined) {
-    await settlePending($)
+    await settlePending($, true)
     return
   }
   const reading = readingFromLimits(limits, await $.clock.now())
@@ -336,7 +360,6 @@ async function onStopFailure($: Host, error: string): Promise<void> {
 async function signIn($: Host, account: Account): Promise<void> {
   const since = await $.clock.now()
   await saveHealth($, account.id, { kind: 'logging-in', since })
-  await note($, `Signing in login ${label(account)}: finish in the browser tab that opened.`)
   const argv = ['claude', 'auth', 'login', '--claudeai', ...(account.email ? ['--email', account.email] : [])]
   // The child opens the browser itself. The link it prints is the paste-a-code
   // flow, which a background child cannot finish, so stdout goes unread.
@@ -357,7 +380,7 @@ async function signIn($: Host, account: Account): Promise<void> {
   const code = await child.result.then(r => r.code, () => null)
   await saveHealth($, account.id, { kind: 'login-needed', why: 'sign-in not finished' })
   if (code !== 0) {
-    await note($, `Sign-in for login ${account.id} did not finish${errors.trim() ? `: ${errors.trim().slice(0, 160)}` : '.'}`)
+    tell($, `Sign-in for Claude login ${account.id} did not finish${errors.trim() ? `: ${errors.trim().slice(0, 160)}` : '.'}`)
     return
   }
   await adoptSignIn($, account)
@@ -370,9 +393,9 @@ async function adoptSignIn($: Host, account: Account): Promise<void> {
   const twin = who === undefined ? undefined : accounts.find(a => a.id !== account.id && sameLogin(a, who))
   if (twin !== undefined) {
     await saveHealth($, account.id, { kind: 'login-needed', why: `that was login ${label(twin)} again` })
-    await note(
+    tell(
       $,
-      `Login ${account.id} signed in as login ${label(twin)}. Sign out of claude.ai in your browser (or pick another organization), then sign in again.`,
+      `Claude login ${account.id} signed in as login ${label(twin)}. Sign out of claude.ai in your browser (or pick another organization), then sign in again.`,
     )
     return
   }
@@ -381,7 +404,6 @@ async function adoptSignIn($: Host, account: Account): Promise<void> {
   await saveHealth($, account.id, { kind: 'ok' })
   const fresh = updated.find(a => a.id === account.id) ?? account
   await checkAccount($, fresh)
-  await note($, `Login ${label(fresh)} is signed in.`)
   await maybeRotate($)
 }
 
@@ -424,7 +446,7 @@ async function removeAccount($: Host, id: string): Promise<void> {
   if (view.activeId === id) {
     const other = view.accounts.find(a => a.id !== id && view.health[a.id]?.kind === 'ok')
     if (other === undefined || !(await switchTo($, other, `login ${id} is being removed`))) {
-      await note($, `Login ${id} is in use and no other login can take over yet; not removed.`)
+      tell($, `Claude login ${id} is in use and no other login can take over yet; not removed.`)
       return
     }
   }
@@ -437,26 +459,34 @@ async function removeAccount($: Host, id: string): Promise<void> {
     const health = { ...v.health }
     delete readings[id]
     delete health[id]
-    return { ...v, readings, health, removing: undefined, note: `Removed login ${label(account)}.` }
+    return { ...v, readings, health, removing: undefined }
   })
 }
 
 // ---------------------------------------------------------------- wiring
 
 /** The footer's one press: opens the pane, or closes it while it shows. */
-async function togglePane($: Host): Promise<void> {
-  const pane = (await $.ui.panes()).find(p => p.id === PANE)
-  if (pane?.isShown) await $.ui.close({ id: PANE })
-  else await $.ui.open({ id: PANE, title: TITLE })
+function togglePane($: Host): Promise<unknown> {
+  isPaneShown = !isPaneShown
+  return isPaneShown ? $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS }) : $.ui.close({ id: PANE })
+}
+
+/** Rotate now: moves to the login that can serve the most right now, as the rotation would once this one runs low. */
+async function rotate($: Host): Promise<void> {
+  const view = await getView($)
+  const target = pickTarget(view, await $.clock.now())
+  if (target === undefined) tell($, 'No other Claude login can take over right now.')
+  else await switchTo($, target, 'you pressed Rotate now')
 }
 
 /** Every press starts its work in the background: a sign-in outlives the press. */
 function actions($: Host): Actions {
   const background = (work: Promise<unknown>) => {
-    work.catch(error => void note($, `Something went wrong: ${String(error)}`))
+    work.catch(error => tell($, `Something went wrong: ${String(error)}`))
   }
   return {
     togglePane: () => background(togglePane($)),
+    rotate: () => background(rotate($)),
     signInAll: () => background(signInAll($)),
     signInOne: id => background(signInOne($, id)),
     cancelSignIn: () => background(Promise.resolve(running?.return({ code: null, signal: 'SIGTERM' }))),
@@ -470,6 +500,8 @@ function actions($: Host): Actions {
       ),
     askRemove: id => background(setView($, v => ({ ...v, removing: id }))),
     remove: id => background(removeAccount($, id)),
+    setFooter: change => background(setFooter($, change)),
+    setDemo: on => background(setView($, v => ({ ...v, demo: on }))),
   }
 }
 
@@ -508,9 +540,12 @@ export const register: Register = on => {
       description: 'Your Claude logins: usage, which one is in use, sign in or add one',
     })
     void boot($).catch(error => debug($, `start failed: ${String(error)}`))
+    void $.ui.panes().then(panes => {
+      isPaneShown = panes.some(p => p.id === PANE && p.isShown)
+    })
     $.clock.every(60_000, () => {
       void mergeStore($)
-        .then(() => settlePending($))
+        .then(() => settlePending($, false))
         .then(() => maybeRotate($))
         .catch(error => debug($, `sync failed: ${String(error)}`))
     })
@@ -533,9 +568,16 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('command.run', { command: 'accounts' }, async $ => {
-    await $.ui.open({ id: PANE, title: TITLE, focus: true })
+    isPaneShown = true
+    await $.ui.open({ id: PANE, title: TITLE, focus: true, columns: PANE_COLUMNS })
     return { text: 'Opened the Claude accounts pane.' }
   })
+
+  on('ui.close', async ($, e, next) => {
+    if (e.id === PANE) isPaneShown = false
+    return next(e)
+  })
+
 
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const view = await getView($)

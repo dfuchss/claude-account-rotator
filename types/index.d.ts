@@ -25,6 +25,30 @@ export type Account = {
   plan?: string
 }
 
+/** How the footer draws one of its rows: a glyph per login, or not at all. */
+export type Glyphs = 'bars' | 'pie' | 'braille' | 'none'
+
+/** How the footer marks the login in use: a dark line down each side of its column, a tile behind it, or the rest dimmed. */
+export type Highlight = 'lines' | 'tile' | 'dim'
+
+/** What glyphs and bars fill with: the room a login has left, or what it has used. */
+export type Fill = 'left' | 'used'
+
+/** The footer's look, picked in the pane and kept across sessions. */
+export type FooterStyle = {
+  session: Glyphs
+  week: Glyphs
+  /** Whether a row ends with the login in use's percent. */
+  sessionPercent: boolean
+  weekPercent: boolean
+  active: Highlight
+  /** Either way the colors go from green with all the room left to red with none. */
+  fill: Fill
+}
+
+/** A run of the footer's text: its color, and the lighter one it takes while the pointer is over the footer. */
+export type FooterRun = { text: string; color?: string; lit?: string; backgroundColor?: string; dimColor?: boolean }
+
 /** Everything the footer, band and pane draw from. */
 export type View = {
   accounts: Account[]
@@ -34,10 +58,11 @@ export type View = {
   activeId: string
   /** Set after a switch until a response shows the new login's usage. */
   pending?: { id: string; from: string; since: number }
-  /** The last thing the mod did or noticed, in one line. */
-  note?: string
   /** Account id whose removal waits for a second press. */
   removing?: string
+  footer: FooterStyle
+  /** This session only: the footer draws imitated usage, to judge its look. */
+  demo?: boolean
 }
 
 declare module 'claude-code' {

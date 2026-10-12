@@ -1,4 +1,4 @@
-import type { Account, Health, Reading, UsageWindow, View } from '../types'
+import type { Account, Fill, FooterStyle, Glyphs, Health, Highlight, Reading, UsageWindow, View } from '../types'
 
 /** Leave a login once its 5-hour window is this full (percent). */
 export const LEAVE_FIVE_HOUR = 90
@@ -7,7 +7,29 @@ export const LEAVE_SEVEN_DAY = 95
 /** Warn this long before a login's refresh token runs out. */
 export const SIGN_IN_WARN_MS = 3 * 24 * 3600_000
 
-export const EMPTY_VIEW: View = { accounts: [], readings: {}, health: {}, activeId: '1' }
+export const DEFAULT_FOOTER: FooterStyle = { session: 'braille', week: 'bars', sessionPercent: true, weekPercent: true, active: 'lines', fill: 'left' }
+
+export const EMPTY_VIEW: View = { accounts: [], readings: {}, health: {}, activeId: '1', footer: DEFAULT_FOOTER }
+
+export const GLYPHS: readonly Glyphs[] = ['bars', 'pie', 'braille', 'none']
+export const HIGHLIGHTS: readonly Highlight[] = ['lines', 'tile', 'dim']
+export const FILLS: readonly Fill[] = ['left', 'used']
+
+const isOneOf = <T extends string>(value: unknown, allowed: readonly T[]): value is T =>
+  typeof value === 'string' && (allowed as readonly string[]).includes(value)
+
+/** The footer's look as stored; any part missing or unknown is the default's. */
+export function footerStyleFrom(value: unknown): FooterStyle {
+  const v = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {}
+  return {
+    session: isOneOf(v.session, GLYPHS) ? v.session : DEFAULT_FOOTER.session,
+    week: isOneOf(v.week, GLYPHS) ? v.week : DEFAULT_FOOTER.week,
+    sessionPercent: typeof v.sessionPercent === 'boolean' ? v.sessionPercent : DEFAULT_FOOTER.sessionPercent,
+    weekPercent: typeof v.weekPercent === 'boolean' ? v.weekPercent : DEFAULT_FOOTER.weekPercent,
+    active: isOneOf(v.active, HIGHLIGHTS) ? v.active : DEFAULT_FOOTER.active,
+    fill: isOneOf(v.fill, FILLS) ? v.fill : DEFAULT_FOOTER.fill,
+  }
+}
 
 /** A window's percent now: 0 once its reset time has passed. */
 export function windowPct(w: UsageWindow | undefined, now: number): number | undefined {
@@ -135,6 +157,11 @@ export function healthOf(cred: Credential | undefined, now: number): Health {
   return { kind: 'ok', ...(cred.refreshTokenExpiresAt ? { refreshExpiresAt: cred.refreshTokenExpiresAt } : {}) }
 }
 
+/** The percent a glyph or bar fills to and the footer prints: the room left, or what is used. */
+export function shown(fill: Fill, leftPct: number): number {
+  return fill === 'left' ? leftPct : 100 - leftPct
+}
+
 /** Percent of a window still free; undefined when the window has no reading. */
 export function roomLeft(w: UsageWindow | undefined, now: number): number | undefined {
   const pct = windowPct(w, now)
@@ -142,12 +169,12 @@ export function roomLeft(w: UsageWindow | undefined, now: number): number | unde
 }
 
 /**
- * The footer's color for a login's weekly room left: green with all of it,
- * through yellow, to red with none (hue 120 down to 0).
+ * The color for a percent of room left: green with all of it, through yellow,
+ * to red with none (hue 120 down to 0); lighter while the pointer is over it.
  */
-export function weekColor(leftPct: number): string {
+export function roomColor(leftPct: number, isLit = false): string {
   const hue = Math.max(0, Math.min(100, leftPct)) * 1.2
-  const [s, l] = [0.75, 0.55]
+  const [s, l] = [0.75, isLit ? 0.72 : 0.55]
   const a = s * Math.min(l, 1 - l)
   const channel = (n: number) => {
     const k = (n + hue / 30) % 12
@@ -155,6 +182,20 @@ export function weekColor(leftPct: number): string {
     return Math.round(v * 255).toString(16).padStart(2, '0')
   }
   return `#${channel(0)}${channel(8)}${channel(4)}`
+}
+
+const BARS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
+
+/** A vertical bar for a percentage, an eighth to full height. */
+export function bar(pct: number): string {
+  return BARS[Math.min(7, Math.max(0, Math.round((pct / 100) * 7)))] ?? '█'
+}
+
+const BRAILLE = ['⡀', '⣀', '⣄', '⣤', '⣦', '⣶', '⣷', '⣿']
+
+/** A braille cell filled from the bottom for a percentage, one dot to all eight. */
+export function braille(pct: number): string {
+  return BRAILLE[Math.min(7, Math.max(0, Math.round((pct / 100) * 7)))] ?? '⣿'
 }
 
 const PIES = ['○', '◔', '◑', '◕', '●']
@@ -165,18 +206,25 @@ export function pie(pct: number | undefined): string {
   return PIES[Math.min(4, Math.max(0, Math.round(pct / 25)))] ?? '●'
 }
 
-/** A ten-cell bar for the pane. */
+/** One login's glyph for a percentage in a footer row's style. */
+export function glyph(style: Glyphs, pct: number): string {
+  switch (style) {
+    case 'bars':
+      return bar(pct)
+    case 'pie':
+      return pie(pct)
+    case 'braille':
+      return braille(pct)
+    case 'none':
+      return ''
+  }
+}
+
+/** A ten-cell bar for the pane, filled by a percentage. */
 export function longBar(pct: number | undefined): string {
   if (pct === undefined) return '··········'
   const full = Math.min(10, Math.max(0, Math.round(pct / 10)))
   return '▰'.repeat(full) + '▱'.repeat(10 - full)
-}
-
-export function tone(pct: number | undefined, leaveAt: number): 'success' | 'warning' | 'error' | 'inactive' {
-  if (pct === undefined) return 'inactive'
-  if (pct >= leaveAt) return 'error'
-  if (pct >= leaveAt - 20) return 'warning'
-  return 'success'
 }
 
 /** "in 1h 20m", "in 3d 4h": relative, so it needs no time zone. */
