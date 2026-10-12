@@ -1,0 +1,15 @@
+{
+  "name": "claude-account-rotator",
+  "owner": {
+    "name": "Ivo Kund"
+  },
+  "metadata": {
+    "description": "Rotates Claude Code between your Claude logins as their usage limits fill."
+  },
+  "plugins": [
+    {
+      "name": "account-rotator",
+      "source": "./"
+    }
+  ]
+}
