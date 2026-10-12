@@ -1,3 +1,4 @@
 # Written by Claude Code on every load; lists the MCP tools connected on this machine.
-.claude-plugin/types/
+**/.claude-plugin/types/
+demo/node_modules/
 .DS_Store

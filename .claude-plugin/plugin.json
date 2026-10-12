@@ -5,5 +5,7 @@
   "author": {
     "name": "Ivo Kund"
   },
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "license": "MIT",
+  "repository": "https://github.com/ivokund/claude-account-rotator"
 }
