@@ -78,10 +78,10 @@ function marked(highlight: Highlight, isActive: boolean): Partial<FooterRun> {
   }
 }
 
-/** The highlights that keep a cell at each end of the columns, in every row. */
-const HAS_ENDS: readonly Highlight[] = ['lines', 'tile']
+/** The highlights drawn in the cells either side of a column: every row keeps those cells. */
+const IN_GAPS: readonly Highlight[] = ['lines', 'tile']
 
-/** A row's room left for the login in use, or undefined where it has none. */
+/** A row's room left for the account in use, or undefined where it has none. */
 function activeRoom(view: View, now: number, row: 0 | 1): number | undefined {
   const i = view.accounts.findIndex(a => a.id === view.activeId)
   const active = view.accounts[i]
@@ -90,49 +90,44 @@ function activeRoom(view: View, now: number, row: 0 | 1): number | undefined {
 
 /**
  * The cell before column `i`, or after the last one at `i` = the number of
- * logins: a space between columns, nothing at the ends, unless the lines are
- * drawn there. They stand mid-cell either side of the column in use, half a
- * cell clear of its glyphs.
+ * accounts: a space between columns, nothing at the ends, unless the highlight
+ * draws there. The lines stand mid-cell either side of the column in use, half
+ * a cell clear of its glyphs; the tile pads it with half a cell of its shade
+ * each side, in half blocks, which terminals draw to fill their cells as they
+ * do the block characters of Claude Code's own logo.
  */
-function edge(view: View, i: number, isLines: boolean): FooterRun[] {
-  if (!isLines) return i > 0 && i < view.accounts.length ? [{ text: ' ' }] : []
+function edge(view: View, i: number, inGaps: boolean): FooterRun[] {
+  if (!inGaps) return i > 0 && i < view.accounts.length ? [{ text: ' ' }] : []
   const active = view.accounts.findIndex(a => a.id === view.activeId)
-  return [i === active || i - 1 === active ? { text: '│', ...LINE } : { text: ' ' }]
+  const isTile = view.footer.active === 'tile'
+  if (i === active) return [isTile ? { text: '▐', color: TILE } : { text: '│', ...LINE }]
+  if (i - 1 === active) return [isTile ? { text: '▌', color: TILE } : { text: '│', ...LINE }]
+  return [{ text: ' ' }]
 }
 
 /**
- * A column as the tile draws it: its glyph with a cell of its own either side,
- * all three on the tile's shade for the login in use. Whole cells only: a
- * terminal that draws a half block from its font can draw it short of the
- * line's height, which notches the shade.
- */
-function tiled(glyph: FooterRun, isActive: boolean): FooterRun[] {
-  const pad: FooterRun = isActive ? { text: ' ', backgroundColor: TILE } : { text: ' ' }
-  return [pad, glyph, pad]
-}
-
-/**
- * One footer row as runs of text: a glyph per login, a space apart, then the
- * login in use's percent at the right end. While another row draws glyphs, a
+ * One footer row as runs of text: a glyph per account, a space apart, then the
+ * account in use's percent at the right end. While another row draws glyphs, a
  * row with its own off keeps their columns blank, so its percent lines up
  * under the other's.
  */
 function footerRow(view: View, now: number, row: 0 | 1, style: Glyphs, showPercent: boolean, hasColumns: boolean): FooterRun[] {
   const pct = activeRoom(view, now, row)
-  const highlight = view.footer.active
-  const isLines = hasColumns && highlight === 'lines'
-  const glyphAt = (a: Account, i: number): FooterRun => ({
-    ...(style === 'none' ? { text: ' ' } : glyphOf(view, a, style, row, rooms(view, a, i, now)[row])),
-    ...marked(highlight, a.id === view.activeId),
-  })
-  const columns = !hasColumns
-    ? []
-    : highlight === 'tile'
-      ? view.accounts.flatMap((a, i) => tiled(glyphAt(a, i), a.id === view.activeId))
-      : [...view.accounts.flatMap((a, i) => [...edge(view, i, isLines), glyphAt(a, i)]), ...edge(view, view.accounts.length, isLines)]
+  const inGaps = hasColumns && IN_GAPS.includes(view.footer.active)
+  const columns = hasColumns
+    ? [
+        ...view.accounts.flatMap((a, i) => [
+          ...edge(view, i, inGaps),
+          {
+            ...(style === 'none' ? { text: ' ' } : glyphOf(view, a, style, row, rooms(view, a, i, now)[row])),
+            ...marked(view.footer.active, a.id === view.activeId),
+          },
+        ]),
+        ...edge(view, view.accounts.length, inGaps),
+      ]
+    : []
   if (!showPercent) return columns
-  const gap = hasColumns ? (HAS_ENDS.includes(highlight) ? ' ' : '  ') : ''
-  const text = `${gap}${(pct === undefined ? '' : `${shown(view.footer.fill, pct)}%`).padStart(4)}`
+  const text = `${hasColumns ? (inGaps ? ' ' : '  ') : ''}${(pct === undefined ? '' : `${shown(view.footer.fill, pct)}%`).padStart(4)}`
   return [...columns, { text, ...(pct === undefined ? {} : roomRun(pct)) }]
 }
 

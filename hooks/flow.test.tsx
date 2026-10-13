@@ -112,8 +112,7 @@ const TWO_LOGINS = { accounts: [{ id: '1', slot: '', email: 'one@example.com' },
 function painted(node: unknown): Record<string, unknown>[] {
   if (typeof node !== 'object' || node === null) return []
   const { type, props, hover, children } = node as { type?: string; props?: Record<string, unknown>; hover?: unknown; children?: unknown[] }
-  const isPainted = props?.color !== undefined || props?.backgroundColor !== undefined
-  const own = type === 'Text' && isPainted ? [{ ...props, ...(hover === undefined ? {} : { hover }) }] : []
+  const own = type === 'Text' && props?.color !== undefined ? [{ ...props, ...(hover === undefined ? {} : { hover }) }] : []
   return [...own, ...(children ?? []).flatMap(painted)]
 }
 
@@ -405,17 +404,17 @@ test('the pane picks each footer row\'s style for every session, and previews it
   await clock.settle()
   await footer.redraw()
   expect((await footer.find(GLYPHS))?.text).toBe('│ │    85%\n│◕│◑      ')
-  // 'tile': the column in use on the theme's message background, a whole cell of it either side, so it is one even block.
+  // 'tile': the column in use on the theme's message background, padded half a cell each side.
   await pane.press({ key: 'footer-active-tile' })
   await clock.settle()
   await footer.redraw()
-  expect((await footer.find(GLYPHS))?.text).toBe('        85%\n ◕  ◑      ')
-  const [padBefore, tiledOne, padAfter, untiled] = painted((await footer.find(GLYPHS))?.children[2])
-  expect(padBefore).toMatchObject({ backgroundColor: 'userMessageBackground' })
+  expect((await footer.find(GLYPHS))?.text).toBe('▐ ▌    85%\n▐◕▌◑      ')
+  const [padBefore, tiledOne, padAfter, tiledTwo] = painted((await footer.find(GLYPHS))?.children[2])
+  expect(padBefore).toMatchObject({ color: 'userMessageBackground' })
   expect(tiledOne).toMatchObject({ color: roomColor(70), backgroundColor: 'userMessageBackground' })
-  expect(padAfter).toMatchObject({ backgroundColor: 'userMessageBackground' })
-  expect(untiled).toMatchObject({ color: roomColor(40) })
-  expect(untiled?.backgroundColor).toBeUndefined()
+  expect(padAfter).toMatchObject({ color: 'userMessageBackground' })
+  expect(tiledTwo).toMatchObject({ color: roomColor(40) })
+  expect(tiledTwo?.backgroundColor).toBeUndefined()
   // 'dim the rest': no marks beside the columns, the logins not in use dimmed.
   await pane.press({ key: 'footer-active-dim' })
   await clock.settle()
