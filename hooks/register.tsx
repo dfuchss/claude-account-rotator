@@ -392,7 +392,7 @@ async function adoptSignIn($: Host, account: Account): Promise<void> {
   const accounts = await loadAccounts($)
   const twin = who === undefined ? undefined : accounts.find(a => a.id !== account.id && sameLogin(a, who))
   if (twin !== undefined) {
-    await saveHealth($, account.id, { kind: 'login-needed', why: `that was login ${label(twin)} again` })
+    await saveHealth($, account.id, { kind: 'login-needed', why: `that was account ${label(twin)} again` })
     tell(
       $,
       `Claude account ${account.id} signed in as account ${label(twin)}. Sign out of claude.ai in your browser (or pick another organization), then sign in again.`,
