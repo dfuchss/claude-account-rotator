@@ -14,17 +14,16 @@
 // on PATH. The terminal is drawn at three times the GIF's size, font and all,
 // so the camera, applied to the frames afterwards, zooms in and stays sharp.
 
-import { execFile, execFileSync, spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { execFile, execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import { promisify } from 'node:util'
+
+import { DEMO, click, prepare, quiet, serve, sleep, waitFor, warmUp } from './session.mjs'
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? 'playwright')
 
-const DEMO = dirname(fileURLToPath(import.meta.url))
-const REPO = dirname(DEMO)
 const WORK = mkdtempSync(join(process.argv[2] ?? tmpdir(), 'rotator-demo-'))
 /** The GIF's size. */
 const OUTPUT = { width: 1160, height: 700 }
@@ -36,66 +35,8 @@ const FPS = 10
 /** How many shots a second the capture takes at most, ahead of the GIF's rate so each GIF frame is fresh. */
 const CAPTURE_FPS = 15
 const PORT = 7690
-const LOGIN_DIR = process.env.DEMO_LOGIN_DIR ?? ''
 /** The file whose making starts the harness draining the account in use. */
 const DRAIN = join(WORK, 'drain')
-
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
-
-/** A fresh Claude Code config with onboarding done and the demo folder trusted. */
-function prepare() {
-  const config = join(WORK, 'config')
-  const project = join(WORK, 'acme-app')
-  mkdirSync(config)
-  mkdirSync(project)
-  const trusted = execFileSync('realpath', [project]).toString().trim()
-  writeFileSync(
-    join(config, '.claude.json'),
-    JSON.stringify({
-      hasCompletedOnboarding: true,
-      theme: 'dark',
-      projects: { [trusted]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true } },
-    }),
-  )
-  const script = join(WORK, 'claude.sh')
-  writeFileSync(
-    script,
-    `#!/bin/sh
-cd "${project}"
-exec env -i HOME="$HOME" USER="$USER" PATH="$PATH" LANG=en_US.UTF-8 TZ=UTC TERM=xterm-256color COLORTERM=truecolor \\
-  CLAUDE_CONFIG_DIR="${config}" CLAUDE_SECURESTORAGE_CONFIG_DIR="${LOGIN_DIR}" DEMO_DRAIN_FILE="${DRAIN}" IS_DEMO=1 CLAUDE_CODE_HIDE_CWD=1 \\
-  claude --plugin-dir "${REPO}" --plugin-dir "${join(DEMO, 'harness')}"
-`,
-    { mode: 0o755 },
-  )
-  return { script, config }
-}
-
-/**
- * Marks what a new user is shown at start as already seen, so the take opens
- * on a clean screen: every startup announcement in the remote config the
- * warm-up cached, and the guest-passes offer.
- */
-function quiet(config) {
-  const file = join(config, '.claude.json')
-  const state = JSON.parse(readFileSync(file, 'utf8'))
-  const announced = state.cachedGrowthBookFeatures?.tengu_startup_announcements ?? []
-  state.announcementImpressions = Object.fromEntries(announced.map(a => [a.id, a.maxImpressions]))
-  state.hasVisitedPasses = true
-  state.passesLastSeenRemaining = Math.max(state.passesLastSeenRemaining ?? 0, 99)
-  writeFileSync(file, JSON.stringify(state))
-}
-
-function serve(script) {
-  const theme = JSON.stringify({ background: '#1f1f1f', foreground: '#e6e6e6', cursor: '#e6e6e6' })
-  // The canvas renderer draws block characters to fill their cells, so the logo and the bars come out whole;
-  // the DOM renderer leaves them to the font, which draws them short of the line.
-  const args = ['-p', String(PORT), '-W', '-o', '-t', `fontSize=${FONT_SIZE}`, '-t', 'fontFamily=Menlo, monospace', '-t', 'rendererType=canvas']
-  args.push('-t', 'disableLeaveAlert=true', '-t', 'disableResizeOverlay=true', '-t', `theme=${theme}`, script)
-  const child = spawn('ttyd', args, { stdio: 'ignore' })
-  const exited = new Promise(resolve => child.once('exit', resolve))
-  return { stop: () => (child.kill(), exited), exited }
-}
 
 /**
  * An arrow that follows the pointer, and a ring where it clicks, `scale` times
@@ -120,48 +61,6 @@ const POINTER = scale => {
     requestAnimationFrame(() => Object.assign(ring.style, { transform: 'scale(1.6)', opacity: '0' }))
     setTimeout(() => ring.remove(), 500)
   }, true)
-}
-
-/**
- * Where a text shows on the terminal's screen, its first match from the bottom
- * on a line that also holds `row`: its centre, its left and top edges, and a
- * cell's size, in page pixels.
- */
-async function locate(page, text, row = '') {
-  return page.evaluate(([needle, within]) => {
-    const term = window.term
-    const buffer = term.buffer.active
-    const box = term.element.querySelector('.xterm-screen').getBoundingClientRect()
-    const cell = { w: box.width / term.cols, h: box.height / term.rows }
-    for (let r = term.rows - 1; r >= 0; r--) {
-      const line = buffer.getLine(buffer.viewportY + r)?.translateToString(false) ?? ''
-      const col = line.indexOf(needle)
-      if (col === -1 || !line.includes(within)) continue
-      const left = box.left + col * cell.w
-      const top = box.top + r * cell.h
-      return { x: left + (needle.length / 2) * cell.w, y: top + cell.h / 2, left, top, cell }
-    }
-    return undefined
-  }, [text, row])
-}
-
-async function waitFor(page, text, timeoutMs = 60_000, row = '') {
-  const until = Date.now() + timeoutMs
-  while (Date.now() < until) {
-    const at = await locate(page, text, row)
-    if (at !== undefined) return at
-    await sleep(200)
-  }
-  throw new Error(`"${text}" never showed`)
-}
-
-/** Moves the pointer there first, as a hand would, so the press lands on a hovered element. */
-async function click(page, text, { pause = 900, row = '' } = {}) {
-  const at = await waitFor(page, text, 60_000, row)
-  await page.mouse.move(at.x, at.y, { steps: 18 })
-  await sleep(250)
-  await page.mouse.click(at.x, at.y)
-  await sleep(pause)
 }
 
 /** Points at the footer's glyphs, a few cells left of its percent, lets its row names show, and clicks it. */
@@ -269,19 +168,8 @@ async function encode(frames, out) {
   execFileSync('gifski', ['--fps', String(FPS), '--quality', '100', '-o', out, ...jobs.map(job => job.to)], { stdio: 'inherit' })
 }
 
-/** One short session, so a fresh config has seen its first-run notices and cached its remote config. */
-async function warmUp(browser, script) {
-  const ttyd = serve(script)
-  await sleep(800)
-  const page = await browser.newPage({ viewport: PAGE })
-  await page.goto(`http://localhost:${PORT}`)
-  await sleep(9000)
-  await page.close()
-  await ttyd.stop()
-}
-
 async function take(browser, script) {
-  const ttyd = serve(script)
+  const ttyd = serve(script, { port: PORT, fontSize: FONT_SIZE, env: { DEMO_DRAIN_FILE: DRAIN, DEMO_IN_USE: 'tile' } })
   await sleep(800)
   const page = await browser.newPage({ viewport: PAGE })
   await page.addInitScript(POINTER, SCALE)
@@ -329,10 +217,10 @@ async function take(browser, script) {
   return frames
 }
 
-const { script, config } = prepare()
+const { script, config } = prepare(WORK)
 const browser = await chromium.launch()
 try {
-  await warmUp(browser, script)
+  await warmUp(browser, script, { port: PORT, fontSize: FONT_SIZE, viewport: PAGE })
   quiet(config)
   const frames = await take(browser, script)
   await encode(frames, join(DEMO, 'demo.gif'))

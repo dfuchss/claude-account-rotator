@@ -5,6 +5,9 @@ import type { EngineInterface, ProcessRunResult, Register, SessionRateLimit } fr
 // requests stay on whatever login started it: a switch here is the mod's alone.
 // The login in use drains once the recorder creates the file DEMO_DRAIN_FILE
 // names, so it runs low while the camera is on the footer, with no prompt sent.
+// DEMO_IN_USE picks how the footer marks the login in use, and the login
+// DEMO_SIGNED_OUT names starts signed out, for a shot of the footer asking
+// for a sign-in.
 
 /** The mod whose calls are answered; every other plugin's go through. */
 const MOD = 'account-rotator'
@@ -52,13 +55,12 @@ const ADDED = { email: 'you@studio.example', orgName: 'Studio', plan: 'max', fiv
 const slotOf = (id: string) => (id === '1' ? '' : `${HOME}/.claude/accounts/${id}`)
 const idOf = (slot: string) => (slot === '' ? '1' : (slot.split('/').pop() ?? ''))
 
-/** The mod's store, kept here: nothing reaches the file every session of the real mod shares. The footer marks the login in use with a tile. */
+/** The mod's store, kept here: nothing reaches the file every session of the real mod shares. */
 const store = new Map<string, unknown>([
   [
     'accounts',
     logins.map(l => ({ id: l.id, slot: slotOf(l.id), email: l.email, orgId: `org-${l.id}`, orgName: l.orgName, plan: l.plan })),
   ],
-  ['footer', { active: 'tile' }],
 ])
 
 let activeSlot = ''
@@ -131,6 +133,10 @@ function status(slot: string): string {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    const inUse = await $.env.get('DEMO_IN_USE')
+    if (inUse !== undefined && inUse !== '') store.set('footer', { active: inUse })
+    const signedOut = await $.env.get('DEMO_SIGNED_OUT')
+    for (const l of logins) if (l.id === signedOut) l.isSignedIn = false
     const started = await next(e)
     const trigger = await $.env.get('DEMO_DRAIN_FILE')
     if (trigger === undefined || trigger === '') return started
