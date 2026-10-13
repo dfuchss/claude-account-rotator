@@ -61,8 +61,8 @@ function glyphOf(view: View, a: Account, style: Glyphs, row: 0 | 1, room: number
   return { text: glyph(style, shown(view.footer.fill, room)), ...roomRun(room) }
 }
 
-/** The tile's color: the theme's own shade behind a message the person sent. */
-const TILE = 'userMessageBackground'
+/** The tile's color: the theme's dim gray, the lines' own, which stands apart from the screen and from the shade under the pointer. */
+const TILE = 'subtle'
 /** The lines' color: the theme's dim gray, so they frame the column without outshining it; its lighter gray under the pointer. */
 const LINE = { color: 'subtle', lit: 'inactive' }
 
@@ -78,9 +78,6 @@ function marked(highlight: Highlight, isActive: boolean): Partial<FooterRun> {
   }
 }
 
-/** The highlights drawn in the cells either side of a column: every row keeps those cells. */
-const IN_GAPS: readonly Highlight[] = ['lines', 'tile']
-
 /** A row's room left for the account in use, or undefined where it has none. */
 function activeRoom(view: View, now: number, row: 0 | 1): number | undefined {
   const i = view.accounts.findIndex(a => a.id === view.activeId)
@@ -89,20 +86,28 @@ function activeRoom(view: View, now: number, row: 0 | 1): number | undefined {
 }
 
 /**
- * The cell before column `i`, or after the last one at `i` = the number of
- * accounts: a space between columns, nothing at the ends, unless the highlight
- * draws there. The lines stand mid-cell either side of the column in use, half
- * a cell clear of its glyphs; the tile pads it with half a cell of its shade
- * each side, in half blocks, which terminals draw to fill their cells as they
- * do the block characters of Claude Code's own logo.
+ * The cells before column `i`, or after the last one at `i` = the number of
+ * accounts: a space between columns, nothing at the ends, and the highlight's
+ * own. The lines stand mid-cell in the cells either side of the column in use,
+ * half a cell clear of its glyphs, so every row keeps a cell at each end. The
+ * tile pads the column with a cell of its shade each side, then the space to
+ * the next: whole cells, since a terminal that draws block characters from its
+ * font, as Terminal.app does, draws a half block short of the line, which
+ * notches the shade.
  */
-function edge(view: View, i: number, inGaps: boolean): FooterRun[] {
-  if (!inGaps) return i > 0 && i < view.accounts.length ? [{ text: ' ' }] : []
+function edge(view: View, i: number): FooterRun[] {
   const active = view.accounts.findIndex(a => a.id === view.activeId)
-  const isTile = view.footer.active === 'tile'
-  if (i === active) return [isTile ? { text: '▐', color: TILE } : { text: '│', ...LINE }]
-  if (i - 1 === active) return [isTile ? { text: '▌', color: TILE } : { text: '│', ...LINE }]
-  return [{ text: ' ' }]
+  const space: FooterRun[] = i > 0 && i < view.accounts.length ? [{ text: ' ' }] : []
+  switch (view.footer.active) {
+    case 'lines':
+      return [i === active || i - 1 === active ? { text: '│', ...LINE } : { text: ' ' }]
+    case 'tile': {
+      const pad: FooterRun = { text: ' ', backgroundColor: TILE }
+      return [...(i - 1 === active ? [pad] : []), ...space, ...(i === active ? [pad] : [])]
+    }
+    case 'dim':
+      return space
+  }
 }
 
 /**
@@ -113,23 +118,23 @@ function edge(view: View, i: number, inGaps: boolean): FooterRun[] {
  */
 function footerRow(view: View, now: number, row: 0 | 1, style: Glyphs, showPercent: boolean, hasColumns: boolean): FooterRun[] {
   const pct = activeRoom(view, now, row)
-  const inGaps = hasColumns && IN_GAPS.includes(view.footer.active)
+  const isLines = hasColumns && view.footer.active === 'lines'
   const columns = hasColumns
     ? [
         ...view.accounts.flatMap((a, i) => [
-          ...edge(view, i, inGaps),
+          ...edge(view, i),
           {
             ...(style === 'none' ? { text: ' ' } : glyphOf(view, a, style, row, rooms(view, a, i, now)[row])),
             ...marked(view.footer.active, a.id === view.activeId),
           },
         ]),
-        ...edge(view, view.accounts.length, inGaps),
+        ...edge(view, view.accounts.length),
       ]
     : []
-  // A cell of the hover shade left of the glyphs where no highlight keeps one before the first column.
-  const lead: FooterRun[] = inGaps ? [] : [{ text: ' ' }]
+  // A cell of the hover shade left of the glyphs where the lines keep none before the first column.
+  const lead: FooterRun[] = isLines ? [] : [{ text: ' ' }]
   if (!showPercent) return [...lead, ...columns]
-  const text = `${hasColumns ? (inGaps ? ' ' : '  ') : ''}${(pct === undefined ? '' : `${shown(view.footer.fill, pct)}%`).padStart(4)}`
+  const text = `${hasColumns ? (isLines ? ' ' : '  ') : ''}${(pct === undefined ? '' : `${shown(view.footer.fill, pct)}%`).padStart(4)}`
   return [...lead, ...columns, { text, ...(pct === undefined ? {} : roomRun(pct)) }]
 }
 
@@ -144,7 +149,7 @@ const widthOf = (row: readonly FooterRun[]) => row.reduce((n, run) => n + run.te
  * cell before the glyphs gives it at the left. Under the pointer a Button is
  * drawn inverted, its colors swapped, so each run's hover is given swapped: its
  * lighter color as the background, the shade as the color. Inverted, that is
- * the glyphs lit on the shade.
+ * the glyphs lit on the shade, and the tile's cells on their own color.
  */
 function runsText({ Text }: Ui, rows: readonly FooterRun[][]) {
   const width = Math.max(...rows.map(widthOf)) + 1
@@ -156,7 +161,7 @@ function runsText({ Text }: Ui, rows: readonly FooterRun[][]) {
           color={run.color}
           backgroundColor={run.backgroundColor}
           dimColor={run.dimColor}
-          hover={{ color: HOVER_SHADE, backgroundColor: run.lit ?? run.color ?? 'text', dimColor: false }}
+          hover={{ color: run.backgroundColor ?? HOVER_SHADE, backgroundColor: run.lit ?? run.color ?? 'text', dimColor: false }}
         >
           {run.text}
         </Text>

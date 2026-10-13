@@ -53,11 +53,11 @@ const away = page => page.mouse.move(PAGE.width * 0.1, PAGE.height * 0.1)
 
 /**
  * The footer, its two rows at the screen's bottom right, cut to what it draws:
- * from the first cell that holds anything to the last, at most `reach` cells
- * left of the screen's right edge so the mode label left of it stays out.
- * Under the pointer, the cell of shade right of the percents too.
+ * from the first cell that holds anything or a color of its own, as the tile's
+ * and the shade's blank cells do, to the last, at most `reach` cells left of the
+ * screen's right edge so the mode label left of it stays out.
  */
-async function shoot(page, { isLit = false } = {}) {
+async function shoot(page) {
   const at = await page.evaluate(reach => {
     const term = window.term
     const buffer = term.buffer.active
@@ -67,17 +67,17 @@ async function shoot(page, { isLit = false } = {}) {
     for (const r of [term.rows - 2, term.rows - 1]) {
       const line = buffer.getLine(buffer.viewportY + r)
       for (let x = term.cols - reach; x < term.cols; x++) {
-        const chars = line?.getCell(x)?.getChars() ?? ''
-        if (chars !== '' && chars !== ' ') filled.push(x)
+        const cell = line?.getCell(x)
+        const chars = cell?.getChars() ?? ''
+        if ((chars !== '' && chars !== ' ') || cell?.isBgDefault() === false) filled.push(x)
       }
     }
     return { box, cell, rows: term.rows, first: Math.min(...filled), last: Math.max(...filled) }
   }, 26)
-  const last = at.last + (isLit ? 1 : 0)
   const clip = {
     x: at.box.left + at.first * at.cell.w,
     y: at.box.top + (at.rows - 2) * at.cell.h,
-    width: (last - at.first + 1) * at.cell.w,
+    width: (at.last - at.first + 1) * at.cell.w,
     height: 2 * at.cell.h,
   }
   return { image: await page.screenshot({ clip }), width: clip.width, height: clip.height }
@@ -95,7 +95,7 @@ async function picked(browser, script, shots) {
   const glyphs = { x: percent.x - 6 * percent.cell.w, y: percent.y }
   await page.mouse.move(glyphs.x, glyphs.y, { steps: 8 })
   await sleep(1200)
-  shots.set('pointer on it', await shoot(page, { isLit: true }))
+  shots.set('pointer on it', await shoot(page))
   await page.mouse.click(glyphs.x, glyphs.y)
   await away(page)
   await waitFor(page, '─ Display')

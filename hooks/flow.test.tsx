@@ -108,11 +108,12 @@ function world(on: On, w: World, store: Record<string, unknown>): MockClock {
 const fresh = (): World => ({ keychain: {}, usage: {}, emails: {}, envSets: [], spawned: [], submitted: [], limits: [], panes: [], toasts: [] })
 const TWO_LOGINS = { accounts: [{ id: '1', slot: '', email: 'one@example.com' }, { id: '2', slot: SLOT2, email: 'two@example.com' }] }
 
-/** The props of every Text drawn with a color, its hover with them, in document order. */
+/** The props of every Text drawn with a color or on one, its hover with them, in document order. */
 function painted(node: unknown): Record<string, unknown>[] {
   if (typeof node !== 'object' || node === null) return []
   const { type, props, hover, children } = node as { type?: string; props?: Record<string, unknown>; hover?: unknown; children?: unknown[] }
-  const own = type === 'Text' && props?.color !== undefined ? [{ ...props, ...(hover === undefined ? {} : { hover }) }] : []
+  const isPainted = props?.color !== undefined || props?.backgroundColor !== undefined
+  const own = type === 'Text' && isPainted ? [{ ...props, ...(hover === undefined ? {} : { hover }) }] : []
   return [...own, ...(children ?? []).flatMap(painted)]
 }
 
@@ -404,17 +405,18 @@ test('the pane picks each footer row\'s style for every session, and previews it
   await clock.settle()
   await footer.redraw()
   expect((await footer.find(GLYPHS))?.text).toBe('│ │    85% \n│◕│◑       ')
-  // 'tile': the column in use on the theme's message background, padded half a cell each side.
+  // 'tile': the column in use on the theme's dim gray, a whole cell of it either side and a space from the next
+  // column, kept under the pointer, where it stands lighter than the shade.
   await pane.press({ key: 'footer-active-tile' })
   await clock.settle()
   await footer.redraw()
-  expect((await footer.find(GLYPHS))?.text).toBe('▐ ▌    85% \n▐◕▌◑       ')
-  const [padBefore, tiledOne, padAfter, tiledTwo] = painted((await footer.find(GLYPHS))?.children[2])
-  expect(padBefore).toMatchObject({ color: 'userMessageBackground' })
-  expect(tiledOne).toMatchObject({ color: roomColor(70), backgroundColor: 'userMessageBackground' })
-  expect(padAfter).toMatchObject({ color: 'userMessageBackground' })
-  expect(tiledTwo).toMatchObject({ color: roomColor(40) })
-  expect(tiledTwo?.backgroundColor).toBeUndefined()
+  expect((await footer.find(GLYPHS))?.text).toBe('         85% \n  ◕  ◑       ')
+  const [padBefore, tiledOne, padAfter, untiled] = painted((await footer.find(GLYPHS))?.children[2])
+  expect(padBefore).toMatchObject({ backgroundColor: 'subtle', hover: { color: 'subtle' } })
+  expect(tiledOne).toMatchObject({ color: roomColor(70), backgroundColor: 'subtle', hover: { color: 'subtle', backgroundColor: roomColor(70, true) } })
+  expect(padAfter).toMatchObject({ backgroundColor: 'subtle', hover: { color: 'subtle' } })
+  expect(untiled).toMatchObject({ color: roomColor(40), hover: { color: 'userMessageBackground' } })
+  expect(untiled?.backgroundColor).toBeUndefined()
   // 'dim the rest': no marks beside the columns, the logins not in use dimmed.
   await pane.press({ key: 'footer-active-dim' })
   await clock.settle()
