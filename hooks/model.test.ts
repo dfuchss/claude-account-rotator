@@ -20,6 +20,7 @@ function view(readings: Record<string, [number, number]>, health: Record<string,
     health: Object.fromEntries(ids.map(id => [id, health[id] ?? { kind: 'ok' as const }])),
     activeId: '1',
     footer: DEFAULT_FOOTER,
+    hasFontBlocks: false,
   }
 }
 

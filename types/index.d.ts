@@ -63,6 +63,8 @@ export type View = {
   footer: FooterStyle
   /** This session only: the footer draws imitated usage, to judge its look. */
   demo?: boolean
+  /** This session's terminal draws block characters from its font, short of the line, as Terminal.app does. */
+  hasFontBlocks: boolean
 }
 
 declare module 'claude-code' {

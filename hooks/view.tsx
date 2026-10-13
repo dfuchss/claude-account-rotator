@@ -78,6 +78,9 @@ function marked(highlight: Highlight, isActive: boolean): Partial<FooterRun> {
   }
 }
 
+/** The highlights drawn in the cells either side of a column: every row keeps those cells. */
+const IN_GAPS: readonly Highlight[] = ['lines', 'tile']
+
 /** A row's room left for the account in use, or undefined where it has none. */
 function activeRoom(view: View, now: number, row: 0 | 1): number | undefined {
   const i = view.accounts.findIndex(a => a.id === view.activeId)
@@ -86,28 +89,21 @@ function activeRoom(view: View, now: number, row: 0 | 1): number | undefined {
 }
 
 /**
- * The cells before column `i`, or after the last one at `i` = the number of
- * accounts: a space between columns, nothing at the ends, and the highlight's
- * own. The lines stand mid-cell in the cells either side of the column in use,
- * half a cell clear of its glyphs, so every row keeps a cell at each end. The
- * tile pads the column with a cell of its shade each side, then the space to
- * the next: whole cells, since a terminal that draws block characters from its
- * font, as Terminal.app does, draws a half block short of the line, which
- * notches the shade.
+ * The cell before column `i`, or after the last one at `i` = the number of
+ * accounts: a space between columns, nothing at the ends, unless the highlight
+ * draws there. The lines stand mid-cell either side of the column in use, half
+ * a cell clear of its glyphs. The tile pads it with half of each of those
+ * cells, in half blocks, which most terminals draw to fill their cells; where
+ * the terminal draws them from its font, short of the line, they would notch
+ * the shade, so there it takes the whole cells.
  */
-function edge(view: View, i: number): FooterRun[] {
+function edge(view: View, i: number, inGaps: boolean): FooterRun[] {
+  if (!inGaps) return i > 0 && i < view.accounts.length ? [{ text: ' ' }] : []
   const active = view.accounts.findIndex(a => a.id === view.activeId)
-  const space: FooterRun[] = i > 0 && i < view.accounts.length ? [{ text: ' ' }] : []
-  switch (view.footer.active) {
-    case 'lines':
-      return [i === active || i - 1 === active ? { text: '│', ...LINE } : { text: ' ' }]
-    case 'tile': {
-      const pad: FooterRun = { text: ' ', backgroundColor: TILE }
-      return [...(i - 1 === active ? [pad] : []), ...space, ...(i === active ? [pad] : [])]
-    }
-    case 'dim':
-      return space
-  }
+  if (i !== active && i - 1 !== active) return [{ text: ' ' }]
+  if (view.footer.active === 'lines') return [{ text: '│', ...LINE }]
+  if (view.hasFontBlocks) return [{ text: ' ', backgroundColor: TILE }]
+  return [{ text: i === active ? '▐' : '▌', color: TILE }]
 }
 
 /**
@@ -118,23 +114,23 @@ function edge(view: View, i: number): FooterRun[] {
  */
 function footerRow(view: View, now: number, row: 0 | 1, style: Glyphs, showPercent: boolean, hasColumns: boolean): FooterRun[] {
   const pct = activeRoom(view, now, row)
-  const isLines = hasColumns && view.footer.active === 'lines'
+  const inGaps = hasColumns && IN_GAPS.includes(view.footer.active)
   const columns = hasColumns
     ? [
         ...view.accounts.flatMap((a, i) => [
-          ...edge(view, i),
+          ...edge(view, i, inGaps),
           {
             ...(style === 'none' ? { text: ' ' } : glyphOf(view, a, style, row, rooms(view, a, i, now)[row])),
             ...marked(view.footer.active, a.id === view.activeId),
           },
         ]),
-        ...edge(view, view.accounts.length),
+        ...edge(view, view.accounts.length, inGaps),
       ]
     : []
-  // A cell of the hover shade left of the glyphs where the lines keep none before the first column.
-  const lead: FooterRun[] = isLines ? [] : [{ text: ' ' }]
+  // A cell of the hover shade left of the glyphs where no highlight keeps one before the first column.
+  const lead: FooterRun[] = inGaps ? [] : [{ text: ' ' }]
   if (!showPercent) return [...lead, ...columns]
-  const text = `${hasColumns ? (isLines ? ' ' : '  ') : ''}${(pct === undefined ? '' : `${shown(view.footer.fill, pct)}%`).padStart(4)}`
+  const text = `${hasColumns ? (inGaps ? ' ' : '  ') : ''}${(pct === undefined ? '' : `${shown(view.footer.fill, pct)}%`).padStart(4)}`
   return [...lead, ...columns, { text, ...(pct === undefined ? {} : roomRun(pct)) }]
 }
 

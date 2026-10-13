@@ -9,7 +9,7 @@ export const SIGN_IN_WARN_MS = 3 * 24 * 3600_000
 
 export const DEFAULT_FOOTER: FooterStyle = { session: 'braille', week: 'bars', sessionPercent: true, weekPercent: true, active: 'lines', fill: 'left' }
 
-export const EMPTY_VIEW: View = { accounts: [], readings: {}, health: {}, activeId: '1', footer: DEFAULT_FOOTER }
+export const EMPTY_VIEW: View = { accounts: [], readings: {}, health: {}, activeId: '1', footer: DEFAULT_FOOTER, hasFontBlocks: false }
 
 export const GLYPHS: readonly Glyphs[] = ['bars', 'pie', 'braille', 'none']
 export const HIGHLIGHTS: readonly Highlight[] = ['lines', 'tile', 'dim']

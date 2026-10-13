@@ -23,6 +23,8 @@ type World = {
   /** Ids of the panes open now. */
   panes: string[]
   toasts: string[]
+  /** The session's environment beyond USER and HOME. */
+  env: Record<string, string>
 }
 
 const blob = (token: string, expiresAt = NOW + 6 * HOUR) =>
@@ -49,7 +51,7 @@ const ran = (exitCode: number, stdout: string): ProcessRunResult => ({
 function world(on: On, w: World, store: Record<string, unknown>): MockClock {
   const clock = mock.clock(on, { now: NOW })
   mock.store(on, store)
-  mock.env(on, { USER: 'tester', HOME: '/Users/tester' })
+  mock.env(on, { USER: 'tester', HOME: '/Users/tester', ...w.env })
   on('env.set', (_$, e) => {
     w.envSets.push(e)
     return { value: undefined }
@@ -105,7 +107,7 @@ function world(on: On, w: World, store: Record<string, unknown>): MockClock {
   return clock
 }
 
-const fresh = (): World => ({ keychain: {}, usage: {}, emails: {}, envSets: [], spawned: [], submitted: [], limits: [], panes: [], toasts: [] })
+const fresh = (): World => ({ keychain: {}, usage: {}, emails: {}, envSets: [], spawned: [], submitted: [], limits: [], panes: [], toasts: [], env: {} })
 const TWO_LOGINS = { accounts: [{ id: '1', slot: '', email: 'one@example.com' }, { id: '2', slot: SLOT2, email: 'two@example.com' }] }
 
 /** The props of every Text drawn with a color or on one, its hover with them, in document order. */
@@ -405,16 +407,15 @@ test('the pane picks each footer row\'s style for every session, and previews it
   await clock.settle()
   await footer.redraw()
   expect((await footer.find(GLYPHS))?.text).toBe('│ │    85% \n│◕│◑       ')
-  // 'tile': the column in use on the theme's dim gray, a whole cell of it either side and a space from the next
-  // column, kept under the pointer, where it stands lighter than the shade.
+  // 'tile': the column in use on the theme's dim gray, padded half a cell each side, kept under the pointer.
   await pane.press({ key: 'footer-active-tile' })
   await clock.settle()
   await footer.redraw()
-  expect((await footer.find(GLYPHS))?.text).toBe('         85% \n  ◕  ◑       ')
+  expect((await footer.find(GLYPHS))?.text).toBe('▐ ▌    85% \n▐◕▌◑       ')
   const [padBefore, tiledOne, padAfter, untiled] = painted((await footer.find(GLYPHS))?.children[2])
-  expect(padBefore).toMatchObject({ backgroundColor: 'subtle', hover: { color: 'subtle' } })
+  expect(padBefore).toMatchObject({ color: 'subtle', hover: { color: 'userMessageBackground', backgroundColor: 'subtle' } })
   expect(tiledOne).toMatchObject({ color: roomColor(70), backgroundColor: 'subtle', hover: { color: 'subtle', backgroundColor: roomColor(70, true) } })
-  expect(padAfter).toMatchObject({ backgroundColor: 'subtle', hover: { color: 'subtle' } })
+  expect(padAfter).toMatchObject({ color: 'subtle' })
   expect(untiled).toMatchObject({ color: roomColor(40), hover: { color: 'userMessageBackground' } })
   expect(untiled?.backgroundColor).toBeUndefined()
   // 'dim the rest': no marks beside the columns, the logins not in use dimmed.
@@ -436,5 +437,25 @@ test('the pane picks each footer row\'s style for every session, and previews it
   expect(usedTwo).toMatchObject({ color: roomColor(40) })
   expect(await pane.find({ text: /^▰{2}▱{8} 20% used$/ })).toBeDefined()
   await pane.unmount()
+  await footer.unmount()
+})
+
+test('in Terminal.app, which draws block characters from its font, the tile pads its column with whole cells', async ($, on) => {
+  const w = fresh()
+  w.env.TERM_PROGRAM = 'Apple_Terminal'
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
+  w.usage['tok-1'] = [20, 30]
+  w.usage['tok-2'] = [10, 30]
+  const clock = world(on, w, { ...TWO_LOGINS, footer: { active: 'tile' } })
+  await start($, clock)
+  const footer = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+  expect((await footer.find(GLYPHS))?.text).toBe(' ⣷ ⣷   80% \n ▆ ▆   70% ')
+  const [padBefore, tiled, padAfter, untiled] = painted((await footer.find(GLYPHS))?.children[0])
+  expect(padBefore).toMatchObject({ backgroundColor: 'subtle', hover: { color: 'subtle' } })
+  expect(tiled).toMatchObject({ color: roomColor(80), backgroundColor: 'subtle' })
+  expect(padAfter).toMatchObject({ backgroundColor: 'subtle', hover: { color: 'subtle' } })
+  expect(untiled).toMatchObject({ color: roomColor(90) })
+  expect(untiled?.backgroundColor).toBeUndefined()
   await footer.unmount()
 })

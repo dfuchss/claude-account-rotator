@@ -507,6 +507,9 @@ function actions($: Host): Actions {
 
 /** First run makes the normal login number 1; then: which login this session uses. */
 async function boot($: Host): Promise<void> {
+  // Terminal.app is the terminal that names itself so and draws block characters from its font.
+  const hasFontBlocks = (await $.env.get('TERM_PROGRAM')) === 'Apple_Terminal'
+  await setView($, v => ({ ...v, hasFontBlocks }))
   let accounts = await loadAccounts($)
   if (accounts.length === 0) {
     accounts = [{ id: '1', slot: '' }]
