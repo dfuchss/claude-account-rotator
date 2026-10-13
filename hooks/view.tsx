@@ -126,9 +126,11 @@ function footerRow(view: View, now: number, row: 0 | 1, style: Glyphs, showPerce
         ...edge(view, view.accounts.length, inGaps),
       ]
     : []
-  if (!showPercent) return columns
+  // A cell of the hover shade left of the glyphs where no highlight keeps one before the first column.
+  const lead: FooterRun[] = inGaps ? [] : [{ text: ' ' }]
+  if (!showPercent) return [...lead, ...columns]
   const text = `${hasColumns ? (inGaps ? ' ' : '  ') : ''}${(pct === undefined ? '' : `${shown(view.footer.fill, pct)}%`).padStart(4)}`
-  return [...columns, { text, ...(pct === undefined ? {} : roomRun(pct)) }]
+  return [...lead, ...columns, { text, ...(pct === undefined ? {} : roomRun(pct)) }]
 }
 
 /** The shade the footer's glyphs stand on under the pointer: the theme's own behind a message the person sent. */
@@ -137,14 +139,15 @@ const HOVER_SHADE = 'userMessageBackground'
 const widthOf = (row: readonly FooterRun[]) => row.reduce((n, run) => n + run.text.length, 0)
 
 /**
- * The rows' runs as Text, rows a line apart and padded to the widest, so the
- * hover shade is one even block. Under the pointer a Button is drawn inverted,
- * its colors swapped, so each run's hover is given swapped: its lighter color
- * as the background, the shade as the color. Inverted, that is the glyphs lit
- * on the shade.
+ * The rows' runs as Text, rows a line apart and padded a cell past the widest,
+ * so the hover shade is one even block with room right of the percents, as the
+ * cell before the glyphs gives it at the left. Under the pointer a Button is
+ * drawn inverted, its colors swapped, so each run's hover is given swapped: its
+ * lighter color as the background, the shade as the color. Inverted, that is
+ * the glyphs lit on the shade.
  */
 function runsText({ Text }: Ui, rows: readonly FooterRun[][]) {
-  const width = Math.max(...rows.map(widthOf))
+  const width = Math.max(...rows.map(widthOf)) + 1
   return rows.flatMap((row, i) => [
     ...(i > 0 ? ['\n'] : []),
     <Text>
