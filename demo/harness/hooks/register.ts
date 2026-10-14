@@ -179,6 +179,8 @@ export const register: Register = on => {
   // and the drain ends with the login that ran low.
   on('env.set', async ($, e, next) => {
     if (next.origin.plugin !== MOD || e.name !== 'CLAUDE_SECURESTORAGE_CONFIG_DIR') return next(e)
+    // The mod sets the slot in use at its start, to learn whether switching is allowed: no switch.
+    if ((e.value ?? '') === activeSlot) return { value: undefined }
     fill(await $.clock.now())
     activeSlot = e.value ?? ''
     isDraining = false

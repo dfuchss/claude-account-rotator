@@ -1,6 +1,6 @@
 import type { Elements, RenderChildren, RenderSurface } from 'claude-code'
 
-import type { Account, Fill, FooterRun, FooterStyle, Glyphs, Highlight, UsageWindow, View } from '../types'
+import type { Account, Fill, FooterRun, FooterStyle, Glyphs, Highlight, RotateTo, UsageWindow, View } from '../types'
 import {
   GLYPHS,
   LEAVE_FIVE_HOUR,
@@ -30,6 +30,7 @@ export type Actions = {
   askRemove: (id: string) => void
   remove: (id: string) => void
   setFooter: (change: Partial<FooterStyle>) => void
+  setRotateTo: (rotateTo: RotateTo) => void
   setDemo: (on: boolean) => void
 }
 
@@ -267,6 +268,12 @@ const FILL_CHOICES = [
   ['left', 'room left'],
   ['used', 'used'],
 ] as const satisfies readonly (readonly [Fill, string])[]
+const ROTATE_CHOICES = [
+  ['reset', 'soonest reset'],
+  ['room', 'most room'],
+  ['order', 'next in list'],
+  ['off', 'disabled'],
+] as const satisfies readonly (readonly [RotateTo, string])[]
 const PREVIEW_CHOICES = [
   ['real', 'your usage'],
   ['demo', 'demo values'],
@@ -308,6 +315,13 @@ function FooterSettings(ui: Ui, view: View, act: Actions) {
     choice(ui, 'footer-fill', 'Show', FILL_CHOICES, view.footer.fill, fill => act.setFooter({ fill })),
     choice(ui, 'footer-active', 'In use', HIGHLIGHT_CHOICES, view.footer.active, active => act.setFooter({ active })),
     choice(ui, 'footer-preview', 'Preview', PREVIEW_CHOICES, view.demo ? 'demo' : 'real', v => act.setDemo(v === 'demo')),
+  ])
+}
+
+/** Which login the rotation moves to. */
+function RotationSettings(ui: Ui, view: View, act: Actions) {
+  return section(ui, 'rotation', 'Rotation', [
+    choice(ui, 'rotate-to', 'Move to', ROTATE_CHOICES, view.rotateTo, act.setRotateTo),
   ])
 }
 
@@ -472,18 +486,32 @@ function accountRows(ui: Ui, view: View, a: Account, now: number, act: Actions) 
   )
 }
 
-/** When the rotation moves on, counted the way the footer shows it: room left, or what is used. */
-function rule(fill: Fill): string {
+/** Where the rotation moves to, as its setting picks. */
+const RULE_TARGETS: Record<Exclude<RotateTo, 'off'>, string> = {
+  reset: 'the account whose 5-hour window resets soonest',
+  room: 'the account with the most room right now',
+  order: 'the next account in the list with room',
+}
+
+/** When the rotation moves on, counted the way the footer shows it (room left, or what is used), and where to. */
+function rule(fill: Fill, rotateTo: RotateTo): string {
+  if (rotateTo === 'off') return 'Rotation is disabled: the session stays on the account in use until you pick another.'
   const when =
     fill === 'left'
       ? `Once the account in use has ${100 - LEAVE_FIVE_HOUR}% of its 5-hour window or ${100 - LEAVE_SEVEN_DAY}% of its week left`
       : `Once the account in use has used ${LEAVE_FIVE_HOUR}% of its 5-hour window or ${LEAVE_SEVEN_DAY}% of its week`
-  return `${when}, moves to the account with the most room right now.`
+  return `${when}, moves to ${RULE_TARGETS[rotateTo]}.`
 }
 
+/** The pane's first line while Claude Code's security policy refuses every switch. */
+const BLOCKED_RULE =
+  "Switching is blocked in this session by Claude Code's security policy for Team and Enterprise accounts: " +
+  "start Claude Code on a personal (Pro or Max) account, or see the README's Team and Enterprise accounts."
+
 /**
- * The pane: when the rotation moves on, then every account, its usage and what
- * can be done with it, then the footer's settings, each group in its box.
+ * The pane: when the rotation moves on (or that it can't), then every account, its usage and what
+ * can be done with it, then where the rotation moves to and the footer's
+ * settings, each group in its box.
  */
 export function Pane(ui: Ui, view: View, now: number, act: Actions) {
   const { Box, Text, Button } = ui
@@ -497,8 +525,9 @@ export function Pane(ui: Ui, view: View, now: number, act: Actions) {
   ]
   return (
     <Box flexDirection="column" rowGap={1}>
-      <Text dimColor>{rule(view.footer.fill)}</Text>
+      {view.isSwitchBlocked ? <Text color="warning">{BLOCKED_RULE}</Text> : <Text dimColor>{rule(view.footer.fill, view.rotateTo)}</Text>}
       {section(ui, 'accounts', 'Accounts', accounts)}
+      {RotationSettings(ui, view, act)}
       {FooterSettings(ui, view, act)}
     </Box>
   )

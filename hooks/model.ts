@@ -1,4 +1,4 @@
-import type { Account, Fill, FooterStyle, Glyphs, Health, Highlight, Reading, UsageWindow, View } from '../types'
+import type { Account, Fill, FooterStyle, Glyphs, Health, Highlight, Reading, RotateTo, UsageWindow, View } from '../types'
 
 /** Leave a login once its 5-hour window is this full (percent). */
 export const LEAVE_FIVE_HOUR = 90
@@ -9,14 +9,30 @@ export const SIGN_IN_WARN_MS = 3 * 24 * 3600_000
 
 export const DEFAULT_FOOTER: FooterStyle = { session: 'braille', week: 'bars', sessionPercent: true, weekPercent: true, active: 'lines', fill: 'left' }
 
-export const EMPTY_VIEW: View = { accounts: [], readings: {}, health: {}, activeId: '1', footer: DEFAULT_FOOTER, hasFontBlocks: false }
+export const DEFAULT_ROTATE_TO: RotateTo = 'reset'
+
+export const EMPTY_VIEW: View = {
+  accounts: [],
+  readings: {},
+  health: {},
+  activeId: '1',
+  footer: DEFAULT_FOOTER,
+  rotateTo: DEFAULT_ROTATE_TO,
+  hasFontBlocks: false,
+}
 
 export const GLYPHS: readonly Glyphs[] = ['bars', 'pie', 'braille', 'none']
 export const HIGHLIGHTS: readonly Highlight[] = ['lines', 'tile', 'dim']
 export const FILLS: readonly Fill[] = ['left', 'used']
+export const ROTATE_TOS: readonly RotateTo[] = ['reset', 'room', 'order', 'off']
 
 const isOneOf = <T extends string>(value: unknown, allowed: readonly T[]): value is T =>
   typeof value === 'string' && (allowed as readonly string[]).includes(value)
+
+/** Which login the rotation moves to, as stored; unknown is the default's. */
+export function rotateToFrom(value: unknown): RotateTo {
+  return isOneOf(value, ROTATE_TOS) ? value : DEFAULT_ROTATE_TO
+}
 
 /** The footer's look as stored; any part missing or unknown is the default's. */
 export function footerStyleFrom(value: unknown): FooterStyle {
@@ -60,13 +76,40 @@ export function shouldLeave(view: View, now: number): boolean {
   return view.health[view.activeId]?.kind === 'login-needed' || isSpent(view.readings[view.activeId], now)
 }
 
-/** The signed-in login below both thresholds that can serve the most right now; unread counts as fresh. */
+/** When a login's 5-hour window resets, epoch ms; Infinity while none is running. */
+function fiveHourReset(r: Reading | undefined, now: number): number {
+  const w = r?.fiveHour
+  if (w?.resetsAt === undefined || (windowPct(w, now) ?? 0) === 0) return Infinity
+  return Date.parse(w.resetsAt)
+}
+
+/**
+ * The signed-in login below both thresholds to move to, as `rotateTo` picks:
+ * the one that can serve the most right now (unread counts as fresh); the one
+ * whose 5-hour window resets soonest, so room about to refill is used first,
+ * the most room breaking ties; or the next in the list after the one in use.
+ * With the rotation off, Rotate now takes the one with the most room.
+ */
 export function pickTarget(view: View, now: number): Account | undefined {
   const ready = view.accounts.filter(
     a => a.id !== view.activeId && view.health[a.id]?.kind === 'ok' && !isSpent(view.readings[a.id], now),
   )
   const available = (a: Account) => availableNow(view.readings[a.id], now) ?? 100
-  return ready.sort((a, b) => available(b) - available(a))[0]
+  const byRoom = (a: Account, b: Account) => available(b) - available(a)
+  switch (view.rotateTo) {
+    case 'room':
+    case 'off':
+      return ready.sort(byRoom)[0]
+    case 'reset': {
+      const reset = (a: Account) => fiveHourReset(view.readings[a.id], now)
+      return ready.sort((a, b) => (reset(a) === reset(b) ? byRoom(a, b) : reset(a) < reset(b) ? -1 : 1))[0]
+    }
+    case 'order': {
+      const at = view.accounts.findIndex(a => a.id === view.activeId)
+      const after = [...view.accounts.slice(at + 1), ...view.accounts.slice(0, at + 1)]
+      return after.find(a => ready.includes(a))
+    }
+  }
 }
 
 /** When the soonest spent window among all logins resets, epoch ms. */
@@ -277,6 +320,20 @@ export function slotEnv(slot: string): Record<string, string> {
     ? { CLAUDE_SECURESTORAGE_CONFIG_DIR: '' }
     : { CLAUDE_SECURESTORAGE_CONFIG_DIR: slot, CLAUDE_CONFIG_DIR: slot }
 }
+
+/**
+ * Whether an error is Claude Code's security default refusing the switch: in
+ * a session on a Team or Enterprise account, or on a machine with managed
+ * settings, it keeps a plugin you install from changing where sign-ins are read.
+ */
+export function isPolicyRefusal(error: unknown): boolean {
+  return String(error).includes('is not for plugins outside policy to change')
+}
+
+/** What the mod says once Claude Code's security default refuses switching. */
+export const BLOCKED_TEXT =
+  "Claude Code's security policy blocks switching accounts in this session: it runs on a Team or Enterprise account. " +
+  'Start Claude Code on a personal (Pro or Max) account, or see https://github.com/ivokund/claude-account-rotator#team-and-enterprise-accounts'
 
 /** The keychain account name Claude Code files its entries under. */
 export function keychainUser(user: string | undefined): string {

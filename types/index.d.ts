@@ -34,6 +34,13 @@ export type Highlight = 'lines' | 'tile' | 'dim'
 /** What glyphs and bars fill with: the room a login has left, or what it has used. */
 export type Fill = 'left' | 'used'
 
+/**
+ * Which login the rotation moves to: the one whose 5-hour window resets
+ * soonest, the one with the most room right now, or the next in the list; or
+ * none, the rotation off: the session moves only when the person picks.
+ */
+export type RotateTo = 'reset' | 'room' | 'order' | 'off'
+
 /** The footer's look, picked in the pane and kept across sessions. */
 export type FooterStyle = {
   session: Glyphs
@@ -61,6 +68,10 @@ export type View = {
   /** Account id whose removal waits for a second press. */
   removing?: string
   footer: FooterStyle
+  /** Which login the rotation moves to, picked in the pane and kept across sessions. */
+  rotateTo: RotateTo
+  /** This session only: Claude Code's security default refuses switching, as on a Team or Enterprise account. */
+  isSwitchBlocked?: boolean
   /** This session only: the footer draws imitated usage, to judge its look. */
   demo?: boolean
   /** This session's terminal draws block characters from its font, short of the line, as Terminal.app does. */

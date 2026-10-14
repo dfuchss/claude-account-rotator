@@ -1,13 +1,17 @@
 import { expect, test } from 'claude-code/testing'
 
-import type { View } from '../types'
-import { DEFAULT_FOOTER, availableNow, braille, credentialFrom, credentialsFile, footerStyleFrom, healthOf, keychainItem, pickTarget, pie, readingFromUsage, shouldLeave, roomColor, windowPct } from './model'
+import type { RotateTo, View } from '../types'
+import { DEFAULT_FOOTER, availableNow, braille, credentialFrom, credentialsFile, footerStyleFrom, healthOf, isPolicyRefusal, keychainItem, pickTarget, pie, readingFromUsage, rotateToFrom, shouldLeave, roomColor, windowPct } from './model'
 
 const NOW = Date.parse('2026-10-12T10:00:00Z')
 const LATER = '2026-10-12T12:00:00Z'
 const WEEK_END = '2026-10-18T03:00:00Z'
 
-function view(readings: Record<string, [number, number]>, health: Record<string, View['health'][string]> = {}): View {
+function view(
+  readings: Record<string, [number, number]>,
+  health: Record<string, View['health'][string]> = {},
+  rotateTo: RotateTo = 'room',
+): View {
   const ids = Object.keys(readings)
   return {
     accounts: ids.map(id => ({ id, slot: id === '1' ? '' : `/h/.claude/accounts/${id}` })),
@@ -20,6 +24,7 @@ function view(readings: Record<string, [number, number]>, health: Record<string,
     health: Object.fromEntries(ids.map(id => [id, health[id] ?? { kind: 'ok' as const }])),
     activeId: '1',
     footer: DEFAULT_FOOTER,
+    rotateTo,
     hasFontBlocks: false,
   }
 }
@@ -46,6 +51,41 @@ test('ranks logins by what they can serve now: the 5-hour room, nothing once the
   expect(availableNow({ fiveHour: { pct: 10, resetsAt: LATER }, sevenDay: { pct: 80, resetsAt: WEEK_END }, at: NOW }, NOW)).toBe(90)
   expect(availableNow({ fiveHour: { pct: 10, resetsAt: LATER }, sevenDay: { pct: 96, resetsAt: WEEK_END }, at: NOW }, NOW)).toBe(0)
   expect(availableNow({ fiveHour: { pct: 97, resetsAt: LATER }, at: NOW }, Date.parse(LATER) + 1)).toBe(100)
+})
+
+test('soonest reset moves to the login whose 5-hour window resets first, never a spent one; one with no window running comes last', () => {
+  const resetsAt = (v: View, id: string, at: string | undefined) => {
+    const r = v.readings[id]
+    if (r?.fiveHour) r.fiveHour = { pct: r.fiveHour.pct, ...(at ? { resetsAt: at } : {}) }
+  }
+  const v = view({ '1': [95, 50], '2': [10, 10], '3': [60, 10], '4': [91, 10] }, {}, 'reset')
+  resetsAt(v, '2', '2026-10-12T14:00:00Z')
+  resetsAt(v, '3', '2026-10-12T11:00:00Z')
+  resetsAt(v, '4', '2026-10-12T10:30:00Z')
+  expect(pickTarget(v, NOW)?.id).toBe('3')
+  // Login 3's window resets before the switch: no window is running, so it comes last.
+  expect(pickTarget(v, Date.parse('2026-10-12T11:00:00Z') + 1)?.id).toBe('2')
+  // Two resets at once: the more room wins.
+  resetsAt(v, '2', '2026-10-12T11:00:00Z')
+  expect(pickTarget(v, NOW)?.id).toBe('2')
+})
+
+test('next in list moves to the login after the one in use, wrapping, past spent and locked ones', () => {
+  const at = (activeId: string, v: View) => pickTarget({ ...v, activeId }, NOW)?.id
+  const v = view({ '1': [10, 10], '2': [95, 10], '3': [20, 10], '4': [80, 10] }, {}, 'order')
+  expect(at('2', v)).toBe('3')
+  expect(at('4', v)).toBe('1')
+  expect(at('3', v)).toBe('4')
+  expect(at('2', view({ '1': [10, 10], '2': [95, 10], '3': [91, 10], '4': [80, 10] }, {}, 'order'))).toBe('4')
+  expect(at('2', view({ '1': [10, 10], '2': [95, 10], '3': [20, 10], '4': [0, 0] }, { '3': { kind: 'login-needed', why: 'x' } }, 'order'))).toBe('4')
+})
+
+test('a stored rotation choice is kept when known, else the soonest reset', () => {
+  expect(rotateToFrom('order')).toBe('order')
+  expect(rotateToFrom('off')).toBe('off')
+  expect(rotateToFrom('room')).toBe('room')
+  expect(rotateToFrom('nope')).toBe('reset')
+  expect(rotateToFrom(undefined)).toBe('reset')
 })
 
 test('a window counts as empty once its reset time has passed', () => {
@@ -116,4 +156,12 @@ test('a stored footer look keeps what it knows and defaults the rest', () => {
     fill: 'used',
   })
   expect(footerStyleFrom(undefined)).toEqual({ session: 'braille', week: 'bars', sessionPercent: true, weekPercent: true, active: 'lines', fill: 'left' })
+})
+
+test('a switch Claude Code\'s security policy refuses is told from any other failure', () => {
+  const refused = 'HooksError: account-rotator: $.env.set: env (managed): CLAUDE_SECURESTORAGE_CONFIG_DIR is not for plugins outside policy to change'
+  expect(isPolicyRefusal(new Error(refused))).toBe(true)
+  expect(isPolicyRefusal(refused)).toBe(true)
+  expect(isPolicyRefusal(new Error('HooksError: account-rotator: $.env.set: timed out'))).toBe(false)
+  expect(isPolicyRefusal(undefined)).toBe(false)
 })

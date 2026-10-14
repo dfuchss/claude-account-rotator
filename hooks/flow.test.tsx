@@ -33,6 +33,8 @@ type World = {
   toasts: string[]
   /** The session's environment beyond USER and HOME. */
   env: Record<string, string>
+  /** Claude Code's security policy refuses every switch, as in a session on a Team seat. */
+  refuseEnv?: boolean
 }
 
 const blob = (token: string, expiresAt = NOW + 6 * HOUR) =>
@@ -60,7 +62,12 @@ function world(on: On, w: World, store: Record<string, unknown>): MockClock {
   const clock = mock.clock(on, { now: NOW })
   mock.store(on, store)
   mock.env(on, { USER: 'tester', HOME, ...w.env })
+  let slot = w.env.CLAUDE_SECURESTORAGE_CONFIG_DIR ?? ''
   on('env.set', (_$, e) => {
+    if (w.refuseEnv) return { deny: `env (managed): ${e.name} is not for plugins outside policy to change` }
+    // The mod sets the slot in use at its start, to learn whether it may switch: not a switch.
+    if ((e.value ?? '') === slot) return { value: undefined }
+    slot = e.value ?? ''
     w.envSets.push(e)
     return { value: undefined }
   })
@@ -333,6 +340,55 @@ test('the band\'s Sign in signs a locked login in through the browser, in its ow
   await footer.unmount()
 })
 
+test('with rotation disabled, a spent login or a turn that dies on the usage limit stays put, and the pane says so', async ($, on) => {
+  const w = fresh()
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
+  w.usage['tok-1'] = [92, 40]
+  w.usage['tok-2'] = [10, 30]
+  const clock = world(on, w, { ...TWO_LOGINS, 'rotate-to': 'off' })
+  await start($, clock)
+  await clock.advance(11 * 60_000)
+  w.usage['tok-1'] = [100, 41]
+  await $.classic.StopFailure({ error: 'rate_limit' })
+  await clock.settle()
+  await clock.advance(36_000)
+  expect(w.envSets).toEqual([])
+  expect(w.submitted).toEqual([])
+  const pane = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'Pane', requestId: 'claude-accounts', props: PANE_PROPS })
+  expect(await pane.find({ text: /^Rotation is disabled/ })).toBeDefined()
+  await pane.unmount()
+})
+
+test('where Claude Code\'s security policy refuses switching, as on a Team seat, the session says so at its start and once, then stops trying; a press still answers', async ($, on) => {
+  const w = fresh()
+  w.refuseEnv = true
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
+  w.usage['tok-1'] = [20, 40]
+  w.usage['tok-2'] = [10, 30]
+  const clock = world(on, w, TWO_LOGINS)
+  await start($, clock)
+  const notice = (t: string) => /security policy blocks switching/.test(t) && /#team-and-enterprise-accounts/.test(t)
+  expect(w.toasts.filter(notice)).toHaveLength(1)
+  // The login in use runs out: no switch is tried, and nothing more is said.
+  w.usage['tok-1'] = [95, 41]
+  await clock.advance(21 * 60_000)
+  w.usage['tok-1'] = [100, 41]
+  await $.classic.StopFailure({ error: 'rate_limit' })
+  await clock.settle()
+  await clock.advance(36_000)
+  expect(w.toasts.filter(notice)).toHaveLength(1)
+  expect(w.submitted).toEqual([])
+  const pane = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'Pane', requestId: 'claude-accounts', props: PANE_PROPS })
+  expect((await pane.find({ type: 'Text', text: /^Switching is blocked in this session/ }))?.props).toMatchObject({ color: 'warning' })
+  await pane.press({ key: 'rotate' })
+  await clock.settle()
+  expect(w.toasts.filter(notice)).toHaveLength(2)
+  expect(w.toasts.filter(t => /Something went wrong|Switched to/.test(t))).toEqual([])
+  await pane.unmount()
+})
+
 test('a turn that dies on the usage limit moves to the other login, then asks Claude to carry on', async ($, on) => {
   const w = fresh()
   w.keychain['Claude Code-credentials'] = blob('tok-1')
@@ -438,6 +494,30 @@ test('Rotate now moves to the login with the most room; the one in use is marked
   // Each line ends in its use, rightmost: Remove, where a login has one, stands before it.
   const ends = (await pane.findAll({ text: /^(Remove|Use now|● in use)$/ })).filter(e => e.type !== 'Box')
   expect(ends.map(e => e.text)).toEqual(['Use now', 'Remove', 'Use now', 'Remove', '● in use'])
+  await pane.unmount()
+})
+
+test('with next in list picked, Rotate now moves to the login after the one in use, not the one with the most room', async ($, on) => {
+  const w = fresh()
+  const SLOT3 = '/Users/tester/.claude/accounts/3'
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
+  w.keychain[await keychainItem(SLOT3)] = blob('tok-3')
+  w.usage['tok-1'] = [20, 30]
+  w.usage['tok-2'] = [60, 30]
+  w.usage['tok-3'] = [40, 50]
+  const three = { accounts: [...TWO_LOGINS.accounts, { id: '3', slot: SLOT3, email: 'three@example.com' }] }
+  const clock = world(on, w, three)
+  await start($, clock)
+  const pane = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'Pane', requestId: 'claude-accounts', props: PANE_PROPS })
+  expect(await pane.find({ text: /moves to the account whose 5-hour window resets soonest/ })).toBeDefined()
+  await pane.press({ key: 'rotate-to-order' })
+  await clock.settle()
+  await pane.redraw()
+  expect(await pane.find({ text: /moves to the next account in the list with room/ })).toBeDefined()
+  await pane.press({ key: 'rotate' })
+  await clock.settle()
+  expect(w.envSets).toEqual([{ name: 'CLAUDE_SECURESTORAGE_CONFIG_DIR', value: SLOT2 }])
   await pane.unmount()
 })
 

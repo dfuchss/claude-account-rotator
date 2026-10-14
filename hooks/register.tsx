@@ -9,8 +9,9 @@ import type {
   Timer,
 } from 'claude-code'
 
-import type { Account, FooterStyle, Health, Reading, View } from '../types'
+import type { Account, FooterStyle, Health, Reading, RotateTo, View } from '../types'
 import {
+  BLOCKED_TEXT,
   EMPTY_VIEW,
   LEAVE_FIVE_HOUR,
   credentialFrom,
@@ -19,10 +20,12 @@ import {
   freeId,
   healthOf,
   identityFromStatus,
+  isPolicyRefusal,
   keychainItem,
   keychainUser,
   label,
   pickTarget,
+  rotateToFrom,
   readingFromLimits,
   readingFromUsage,
   sameLogin,
@@ -76,8 +79,8 @@ let held: { target: Account; why: string; timer: Timer } | undefined
 // ---------------------------------------------------------------- state
 // The view is this session's; the store is one JSON file every session of the
 // mod shares: the list of logins, each login's last reading and health under a
-// key of its own, so sessions writing different logins never collide, and the
-// footer's look.
+// key of its own, so sessions writing different logins never collide, the
+// footer's look, and which login the rotation moves to.
 
 const getView = ($: Host): Promise<View> => read($, viewAtom)
 const setView = ($: Host, fn: (v: View) => View): Promise<View> => update($, viewAtom, fn)
@@ -126,6 +129,7 @@ async function mergeStore($: Host): Promise<void> {
     if (typeof h === 'object' && h !== null && typeof (h as Health).kind === 'string') health[a.id] = h as Health
   }
   const footer = footerStyleFrom(await $.store.get('footer'))
+  const rotateTo = rotateToFrom(await $.store.get('rotate-to'))
   await setView($, v => {
     const nextReadings: Record<string, Reading> = {}
     const nextHealth: Record<string, Health> = {}
@@ -138,7 +142,7 @@ async function mergeStore($: Host): Promise<void> {
       const h = signingIn === a.id ? own : (health[a.id] ?? own)
       if (h !== undefined) nextHealth[a.id] = h
     }
-    return { ...v, accounts, readings: nextReadings, health: nextHealth, footer }
+    return { ...v, accounts, readings: nextReadings, health: nextHealth, footer, rotateTo }
   })
 }
 
@@ -147,6 +151,12 @@ async function setFooter($: Host, change: Partial<FooterStyle>): Promise<void> {
   const footer = { ...(await getView($)).footer, ...change }
   await $.store.set('footer', footer)
   await setView($, v => ({ ...v, footer }))
+}
+
+/** Changes which login the rotation moves to, for every session. */
+async function setRotateTo($: Host, rotateTo: RotateTo): Promise<void> {
+  await $.store.set('rotate-to', rotateTo)
+  await setView($, v => ({ ...v, rotateTo }))
 }
 
 // ---------------------------------------------------------------- host
@@ -214,6 +224,32 @@ async function useSlot($: Host, slot: string): Promise<void> {
   else await $.env.set('CLAUDE_SECURESTORAGE_CONFIG_DIR', slot)
 }
 
+/**
+ * Claude Code's security policy refuses switching in this session: says so
+ * once, as a toast and a notification, and the pane says so while it lasts.
+ * False when it was said already.
+ */
+async function blocked($: Host): Promise<boolean> {
+  if ((await getView($)).isSwitchBlocked) return false
+  await setView($, v => ({ ...v, isSwitchBlocked: true }))
+  $.ui.toast(BLOCKED_TEXT, { timeoutMs: 15_000 })
+  await $.ui.notify(BLOCKED_TEXT, { title: TITLE })
+  return true
+}
+
+/**
+ * Sets the slot already in use, which changes nothing: the policy that refuses
+ * a switch refuses this too, so a session that cannot switch says so at its start.
+ */
+async function checkSwitching($: Host, slot: string): Promise<void> {
+  try {
+    await useSlot($, slot)
+  } catch (error) {
+    if (isPolicyRefusal(error)) await blocked($)
+    else await debug($, `switch check failed: ${String(error)}`)
+  }
+}
+
 // ---------------------------------------------------------------- checks and switching
 
 async function announceLockout($: Host, account: Account, why: string): Promise<void> {
@@ -270,17 +306,20 @@ function whyLeave(view: View, now: number): string {
     : `account ${view.activeId} has used ${Math.round(used)}% of its ${window}`
 }
 
-/** Once the active login is spent or locked out, moves to the one that can serve the most right now. */
+/**
+ * Once the active login is spent or locked out, moves to the one the pane's
+ * Rotation setting picks; never while it is off, or Claude Code's policy refuses it.
+ */
 async function maybeRotate($: Host): Promise<boolean> {
   const now = await $.clock.now()
   const view = await getView($)
-  if (view.pending !== undefined || !shouldLeave(view, now)) return false
+  if (view.rotateTo === 'off' || view.isSwitchBlocked || view.pending !== undefined || !shouldLeave(view, now)) return false
   // With none to move to, the band above the prompt says when the next login frees up.
   const target = pickTarget(view, now)
   return target === undefined ? false : switchTo($, target, whyLeave(view, now))
 }
 
-/** Points this session at `target`; false while the refresh guard holds it back. */
+/** Points this session at `target`; false while the refresh guard holds it back, or Claude Code's policy refuses it. */
 async function switchTo($: Host, target: Account, why: string): Promise<boolean> {
   const now = await $.clock.now()
   const view = await getView($)
@@ -301,7 +340,14 @@ async function switchTo($: Host, target: Account, why: string): Promise<boolean>
   }
   held?.timer.cancel()
   held = undefined
-  await useSlot($, target.slot)
+  try {
+    await useSlot($, target.slot)
+  } catch (error) {
+    if (!isPolicyRefusal(error)) throw error
+    // A press of Use now or Rotate now gets an answer, even once the notice has shown.
+    if (!(await blocked($))) tell($, BLOCKED_TEXT)
+    return false
+  }
   await setView($, v => ({
     ...v,
     activeId: target.id,
@@ -489,7 +535,7 @@ function togglePane($: Host): Promise<unknown> {
   return isPaneShown ? $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS }) : $.ui.close({ id: PANE })
 }
 
-/** Rotate now: moves to the login that can serve the most right now, as the rotation would once this one runs low. */
+/** Rotate now: moves to the login the pane's Rotation setting picks, as the rotation would once this one runs low; with it off, the most room. */
 async function rotate($: Host): Promise<void> {
   const view = await getView($)
   const target = pickTarget(view, await $.clock.now())
@@ -519,6 +565,7 @@ function actions($: Host): Actions {
     askRemove: id => background(setView($, v => ({ ...v, removing: id }))),
     remove: id => background(removeAccount($, id)),
     setFooter: change => background(setFooter($, change)),
+    setRotateTo: rotateTo => background(setRotateTo($, rotateTo)),
     setDemo: on => background(setView($, v => ({ ...v, demo: on }))),
   }
 }
@@ -544,6 +591,7 @@ async function boot($: Host): Promise<void> {
   const activeId = active.id
   await mergeStore($)
   await setView($, v => ({ ...v, activeId }))
+  await checkSwitching($, slot)
   for (const account of accounts.filter(a => a.email === undefined || a.orgId === undefined)) {
     const who = await signedInAs($, account.slot)
     if (who === undefined) continue

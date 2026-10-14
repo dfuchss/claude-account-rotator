@@ -1,8 +1,9 @@
 // Records demo/demo.gif: a real Claude Code session with the mod, fed imitated
 // accounts by the harness in demo/harness, driven with real clicks. Two scenes:
 // the camera close on the footer while the account in use runs low, pulling
-// back so the session's move to another shows with the notice saying so;
-// then the panel trying the footer's top row as bars, pies and braille.
+// back so the session's move to the one whose 5-hour window resets soonest
+// shows with the notice saying so; then the panel, its Rotation setting in
+// view, trying the footer's top row as bars, pies and braille.
 //
 //   brew install ttyd gifski ffmpeg
 //   cd demo && npm install && npx playwright install chromium
@@ -10,7 +11,9 @@
 //
 // Everything the mod shows is imitated and no prompt is sent; the session
 // still starts as a real account, DEMO_LOGIN_DIR's (an account folder the mod
-// made) else your normal one, whose plan the header shows. Needs Claude Code
+// made) else your normal one, whose plan the header shows. That account must
+// be a personal one (Pro or Max): Claude Code refuses a switch in a session on
+// a Team or Enterprise account, imitated or not. Needs Claude Code
 // on PATH. The terminal is drawn at three times the GIF's size, font and all,
 // so the camera, applied to the frames afterwards, zooms in and stays sharp.
 
@@ -180,8 +183,8 @@ async function take(browser, script) {
   await sleep(1200)
 
   // 1. Close on the footer, its rows named under the pointer: the account in use runs low.
-  // The camera is back on the whole screen by the time the session moves to the one with
-  // the most room, so the footer's change and the notice at the top show together.
+  // The camera is back on the whole screen by the time the session moves to the one whose
+  // 5-hour window resets soonest, account 3, so the footer's change and the notice at the top show together.
   camera(FOOTER)
   await sleep(1800)
   const glyphs = await waitFor(page, '%')
@@ -191,15 +194,16 @@ async function take(browser, script) {
   await page.mouse.move(PAGE.width * 0.55, PAGE.height * 0.55, { steps: 16 })
   await sleep(600)
   writeFileSync(DRAIN, '')
-  await waitFor(page, 'Switched to Claude account 2')
+  await waitFor(page, 'Switched to Claude account 3')
   camera(FULL, 1100, Date.now() - 1700)
   await sleep(3500)
 
-  // 2. The footer, named under the pointer, opens the panel; then its top row's glyphs, the camera on both.
+  // 2. The footer, named under the pointer, opens the panel; then its top row's glyphs, the camera on
+  // both, with the Rotation setting above the footer's.
   await page.mouse.move(PAGE.width * 0.6, PAGE.height * 0.45)
   await viaFooter(page, { pause: 1800 })
-  const display = await waitFor(page, '─ Display')
-  camera(corner(display.left - display.cell.w * 4, display.top - display.cell.h))
+  const rotation = await waitFor(page, '─ Rotation')
+  camera(corner(rotation.left - rotation.cell.w * 4, rotation.top - rotation.cell.h))
   await sleep(1800)
   await click(page, '○ bars', { row: 'Session', pause: 1500 })
   await click(page, '○ pie', { row: 'Session', pause: 1500 })
