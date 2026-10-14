@@ -7,7 +7,7 @@
 //
 //   brew install ttyd gifski ffmpeg
 //   cd demo && npm install && npx playwright install chromium
-//   DEMO_LOGIN_DIR=~/.claude/accounts/3 node record.mjs [work dir]
+//   node record.mjs [work dir]
 //
 // Everything the mod shows is imitated and no prompt is sent; the session
 // still starts as a real account, DEMO_LOGIN_DIR's (an account folder the mod
