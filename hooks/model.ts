@@ -330,10 +330,34 @@ export function isPolicyRefusal(error: unknown): boolean {
   return String(error).includes('is not for plugins outside policy to change')
 }
 
+/** Whether this session reads the normal login, the one `/login` signs in, rather than a slot the mod moved it to. */
+export function isOnNormalLogin(view: View): boolean {
+  return (view.accounts.find(a => a.id === view.activeId)?.slot ?? '') === ''
+}
+
+/**
+ * Why switching is blocked, and how to get a session that can switch. One on
+ * the normal login started on a Team seat: signing that login in to a personal
+ * account fixes the next session. One on a seat reloaded plugins there, or
+ * started there, as `/restart` keeps the slot in use; a new session from the
+ * terminal starts on the normal login already. `/login` there would sign in
+ * the seat instead, as sign-ins follow the slot in use.
+ */
+export function blockedAdvice(isNormalLogin: boolean): string {
+  return isNormalLogin
+    ? "Claude Code doesn't let plugins switch accounts in a session that starts on a Team or Enterprise account. " +
+        'Fix: /login with your personal (Pro or Max) account, then restart Claude.'
+    : "Claude Code doesn't let plugins switch accounts once a session on a Team or Enterprise account starts or reloads plugins. " +
+        'Fix: quit Claude and run `claude --continue` or `claude --resume`. Not /restart, which keeps this account.'
+}
+
 /** What the mod says once Claude Code's security default refuses switching. */
-export const BLOCKED_TEXT =
-  "Claude Code's security policy blocks switching accounts in this session: it runs on a Team or Enterprise account. " +
-  'Start Claude Code on a personal (Pro or Max) account, or see https://github.com/ivokund/claude-account-rotator#team-and-enterprise-accounts'
+export function blockedText(isNormalLogin: boolean): string {
+  return (
+    `Can't switch accounts in this session. ${blockedAdvice(isNormalLogin)} ` +
+    'More: https://github.com/ivokund/claude-account-rotator#team-and-enterprise-accounts'
+  )
+}
 
 /** The keychain account name Claude Code files its entries under. */
 export function keychainUser(user: string | undefined): string {

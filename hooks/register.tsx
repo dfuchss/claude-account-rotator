@@ -11,15 +11,16 @@ import type {
 
 import type { Account, FooterStyle, Health, Reading, RotateTo, View } from '../types'
 import {
-  BLOCKED_TEXT,
   EMPTY_VIEW,
   LEAVE_FIVE_HOUR,
+  blockedText,
   credentialFrom,
   credentialsFile,
   footerStyleFrom,
   freeId,
   healthOf,
   identityFromStatus,
+  isOnNormalLogin,
   isPolicyRefusal,
   keychainItem,
   keychainUser,
@@ -75,6 +76,8 @@ let signingIn: string | undefined
 let signInQueue: Promise<void> = Promise.resolve()
 /** A switch the refresh guard holds back: the latest one asked for, tried again each minute until it goes. */
 let held: { target: Account; why: string; timer: Timer } | undefined
+/** Logins a switch to did not take this session: the rotation leaves them be; Use now still tries. */
+const untaken = new Set<string>()
 
 // ---------------------------------------------------------------- state
 // The view is this session's; the store is one JSON file every session of the
@@ -230,10 +233,12 @@ async function useSlot($: Host, slot: string): Promise<void> {
  * False when it was said already.
  */
 async function blocked($: Host): Promise<boolean> {
-  if ((await getView($)).isSwitchBlocked) return false
+  const view = await getView($)
+  if (view.isSwitchBlocked) return false
   await setView($, v => ({ ...v, isSwitchBlocked: true }))
-  $.ui.toast(BLOCKED_TEXT, { timeoutMs: 15_000 })
-  await $.ui.notify(BLOCKED_TEXT, { title: TITLE })
+  const text = blockedText(isOnNormalLogin(view))
+  $.ui.toast(text, { timeoutMs: 15_000 })
+  await $.ui.notify(text, { title: TITLE })
   return true
 }
 
@@ -315,7 +320,7 @@ async function maybeRotate($: Host): Promise<boolean> {
   const view = await getView($)
   if (view.rotateTo === 'off' || view.isSwitchBlocked || view.pending !== undefined || !shouldLeave(view, now)) return false
   // With none to move to, the band above the prompt says when the next login frees up.
-  const target = pickTarget(view, now)
+  const target = pickTarget({ ...view, accounts: view.accounts.filter(a => !untaken.has(a.id)) }, now)
   return target === undefined ? false : switchTo($, target, whyLeave(view, now))
 }
 
@@ -345,7 +350,7 @@ async function switchTo($: Host, target: Account, why: string): Promise<boolean>
   } catch (error) {
     if (!isPolicyRefusal(error)) throw error
     // A press of Use now or Rotate now gets an answer, even once the notice has shown.
-    if (!(await blocked($))) tell($, BLOCKED_TEXT)
+    if (!(await blocked($))) tell($, blockedText(isOnNormalLogin(await getView($))))
     return false
   }
   await setView($, v => ({
@@ -362,6 +367,8 @@ async function switchTo($: Host, target: Account, why: string): Promise<boolean>
  * After a switch: which login answered the latest response? The new one
  * (confirmed), or too soon to say. Only a response still answered by the old
  * login minutes later is reported: an idle session has no new response to tell.
+ * Then the session is pointed back at the old login, and the footer and pane
+ * mark it in use again, as it is the one spending.
  */
 async function settlePending($: Host, isResponse: boolean): Promise<void> {
   const { pending, accounts } = await getView($)
@@ -372,10 +379,28 @@ async function settlePending($: Host, isResponse: boolean): Promise<void> {
   const target = accounts.find(a => a.id === pending.id)
   if (target !== undefined) await checkAccount($, target)
   if (sameUsage(reading, (await getView($)).readings[pending.id], now)) {
+    untaken.delete(pending.id)
     await setView($, v => ({ ...v, pending: undefined }))
   } else if (isResponse && now - pending.since > CONFIRM_GIVE_UP_MS) {
-    await setView($, v => ({ ...v, pending: undefined }))
-    tell($, `The switch to Claude account ${pending.id} has not shown in responses; usage still looks like account ${pending.from}.`)
+    const from = accounts.find(a => a.id === pending.from)
+    if (from !== undefined) await checkAccount($, from)
+    if (from === undefined || !sameUsage(reading, (await getView($)).readings[from.id], now)) {
+      await setView($, v => ({ ...v, pending: undefined }))
+      tell($, `The switch to Claude account ${pending.id} has not shown in responses.`)
+      return
+    }
+    untaken.add(pending.id)
+    try {
+      await useSlot($, from.slot)
+    } catch (error) {
+      await debug($, `switch back failed: ${String(error)}`)
+    }
+    await setView($, v => ({ ...v, activeId: from.id, pending: undefined }))
+    tell(
+      $,
+      `The switch to Claude account ${pending.id} did not take: responses still use account ${label(from)}, so it shows in use again. ` +
+        `The rotation leaves account ${pending.id} be in this session; Use now tries it again.`,
+    )
   }
 }
 

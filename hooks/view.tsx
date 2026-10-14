@@ -7,7 +7,9 @@ import {
   LEAVE_SEVEN_DAY,
   SIGN_IN_WARN_MS,
   availableNow,
+  blockedAdvice,
   glyph,
+  isOnNormalLogin,
   longBar,
   nextReset,
   roomColor,
@@ -200,6 +202,12 @@ export function Footer(ui: Ui, view: View, modes: readonly string[], now: number
               <Text dimColor>{ROW_NAMES[row]}</Text>
             ))}
           </Box>
+        )}
+        {/* Switching is blocked: a press opens the pane, whose first line says why. */}
+        {view.isSwitchBlocked && (
+          <Button key="switch-blocked" label="Switching blocked" plain onPress={act.togglePane}>
+            <Text color="warning">⚠</Text>
+          </Button>
         )}
         {/* A scope of its own: the glyphs light only while the pointer is on them, as the control inverts. */}
         <Box key="accounts-glyphs">
@@ -504,9 +512,11 @@ function rule(fill: Fill, rotateTo: RotateTo): string {
 }
 
 /** The pane's first line while Claude Code's security policy refuses every switch. */
-const BLOCKED_RULE =
-  "Switching is blocked in this session by Claude Code's security policy for Team and Enterprise accounts: " +
-  "start Claude Code on a personal (Pro or Max) account, or see the README's Team and Enterprise accounts."
+function blockedRule(view: View): string {
+  return (
+    `Can't switch accounts in this session. ${blockedAdvice(isOnNormalLogin(view))} More in the README.`
+  )
+}
 
 /**
  * The pane: when the rotation moves on (or that it can't), then every account, its usage and what
@@ -525,7 +535,7 @@ export function Pane(ui: Ui, view: View, now: number, act: Actions) {
   ]
   return (
     <Box flexDirection="column" rowGap={1}>
-      {view.isSwitchBlocked ? <Text color="warning">{BLOCKED_RULE}</Text> : <Text dimColor>{rule(view.footer.fill, view.rotateTo)}</Text>}
+      {view.isSwitchBlocked ? <Text color="warning">{blockedRule(view)}</Text> : <Text dimColor>{rule(view.footer.fill, view.rotateTo)}</Text>}
       {section(ui, 'accounts', 'Accounts', accounts)}
       {RotationSettings(ui, view, act)}
       {FooterSettings(ui, view, act)}

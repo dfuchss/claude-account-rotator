@@ -26,6 +26,7 @@ Click it for the panel: each account's usage and reset times, **Sign in**, **Use
 
 - **Rotates.** Once the account in use is down to 10% of its 5-hour window or 5% of its week, the session moves to another account, and a notice says which and why. **Rotation** in the panel picks which: by default the one whose 5-hour window resets soonest, so room about to refill is used before it does; else the one with the most room, or the next in the list; or **disabled**, which leaves switching to you.
 - **Recovers.** A turn that still hits a usage limit or a rejected sign-in switches accounts and asks Claude to carry on.
+- **Shows what is really in use.** If a switch doesn't take, the footer and panel go back to the old account, and the rotation stops trying the other one for that session.
 - **Warns.** When every account is near its limit, a line above the prompt says when the next one frees up. When an account needs signing in again, the same line says so and signs it in with one click.
 
 ## Requirements
@@ -33,7 +34,7 @@ Click it for the panel: each account's usage and reset times, **Sign in**, **Use
 - macOS, where Claude Code keeps sign-ins in the keychain, or Linux, where it keeps them in files.
 - Claude Code 2.1.296 or later, in its fullscreen renderer (`/tui fullscreen`), the only one that passes clicks on: the panel opens with a click.
 - Any Mac terminal: Terminal.app, iTerm2, Ghostty, Warp, VS Code; on Linux, one with mouse reporting. In iTerm2 the profile's *Enable mouse reporting* must be on, in tmux `set -g mouse on`, and iTerm2's `tmux -CC` mode can't run fullscreen.
-- Claude subscription accounts (tested with Max and Team seats), with the session started on a personal one, Pro or Max: see [Team and Enterprise accounts](#team-and-enterprise-accounts).
+- Claude subscription accounts (tested with Max and Team seats). Your `/login` must be a personal one, Pro or Max: see [Team and Enterprise accounts](#team-and-enterprise-accounts).
 
 Claude Code's own "You've used N% of your session limit" warning can still show for a minute after a switch: the switch lands within about 35 seconds, and warnings Claude Code queued before it still play. No mod can hide it.
 
@@ -41,14 +42,18 @@ Mods are early access in Claude Code, and this one relies on internals a release
 
 ## Team and Enterprise accounts
 
-Since 2.1.295, Claude Code runs a built-in security default in every session on a Team or Enterprise account, and on any machine with managed settings. It keeps the plugins you install from changing where Claude Code reads its sign-in, which is how this mod switches. In such a session the mod can't switch, and it says so as the session starts and at the top of the panel.
+The mod moves between personal accounts and Team or Enterprise seats. But Claude Code stops plugins from switching accounts, for the rest of a session, when:
 
-So start Claude Code on a personal account, Pro or Max. From there it moves to your Team seats and back.
+- **the session started on a Team or Enterprise account**, or
+- **plugins reloaded while one was in use**: `/reload-plugins`, or installing, enabling or disabling a plugin (since 2.1.299).
 
-- **Every new session starts on your normal login**, the one your last `/login` saved. A switch by the mod changes only the session it is made in.
-- **Keep that normal login personal.** If you `/login` with a Team account, every new session starts on Team and can't switch. Run `/login` with your personal account once to fix it.
-- **Add and renew Team seats from the panel** (**+ Add an account**, **Sign in**), not with `/login`. The panel signs each account in to its own folder and leaves your normal login alone.
-- **After a plugin reload on a Team seat, start a new session.** Since 2.1.299, installing, enabling or disabling a plugin while a Team account is in use blocks switching until that session ends.
+The mod tells you when this happens. To keep switching:
+
+- **`/login` with your personal account (Pro or Max).** New sessions always start on your last `/login`. It doesn't unblock the session it runs in: restart Claude after.
+- **Add Team seats from the panel**, not `/login`: **+ Add an account**, and **Sign in** to renew.
+- **Restart Claude when blocked:** quit, and run `claude --continue` or `claude --resume` to keep your conversation (or plain `claude`). Each starts on your `/login`. Not `/restart`: it stays on the account in use.
+
+The block comes from a built-in security default that stops plugins you install from changing where Claude Code reads its sign-in. It also runs on any machine with managed settings.
 
 ### Turning the security default off
 

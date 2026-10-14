@@ -369,8 +369,10 @@ test('where Claude Code\'s security policy refuses switching, as on a Team seat,
   w.usage['tok-2'] = [10, 30]
   const clock = world(on, w, TWO_LOGINS)
   await start($, clock)
-  const notice = (t: string) => /security policy blocks switching/.test(t) && /#team-and-enterprise-accounts/.test(t)
+  const notice = (t: string) => /^Can't switch accounts in this session/.test(t) && /#team-and-enterprise-accounts/.test(t)
   expect(w.toasts.filter(notice)).toHaveLength(1)
+  // On the normal login, a personal sign-in there gives the next session one that can switch.
+  expect(w.toasts.find(notice)).toMatch(/session that starts on a Team or Enterprise account\. Fix: \/login with your personal \(Pro or Max\) account, then restart Claude/)
   // The login in use runs out: no switch is tried, and nothing more is said.
   w.usage['tok-1'] = [95, 41]
   await clock.advance(21 * 60_000)
@@ -380,12 +382,72 @@ test('where Claude Code\'s security policy refuses switching, as on a Team seat,
   await clock.advance(36_000)
   expect(w.toasts.filter(notice)).toHaveLength(1)
   expect(w.submitted).toEqual([])
+  const footer = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+  expect((await footer.find({ type: 'Text', text: '⚠' }))?.props).toMatchObject({ color: 'warning' })
+  await footer.press({ key: 'switch-blocked' })
+  await clock.settle()
+  expect(w.panes).toEqual(['claude-accounts'])
+  await footer.unmount()
   const pane = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'Pane', requestId: 'claude-accounts', props: PANE_PROPS })
-  expect((await pane.find({ type: 'Text', text: /^Switching is blocked in this session/ }))?.props).toMatchObject({ color: 'warning' })
+  expect((await pane.find({ type: 'Text', text: /^Can't switch accounts in this session\. .*starts on a Team/ }))?.props).toMatchObject({ color: 'warning' })
   await pane.press({ key: 'rotate' })
   await clock.settle()
   expect(w.toasts.filter(notice)).toHaveLength(2)
   expect(w.toasts.filter(t => /Something went wrong|Switched to/.test(t))).toEqual([])
+  await pane.unmount()
+})
+
+test('where the policy starts refusing once the mod has moved the session to a seat, it says to start again, not to /login, which would sign in the seat', async ($, on) => {
+  const w = fresh()
+  w.refuseEnv = true
+  w.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = SLOT2
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
+  w.usage['tok-1'] = [20, 40]
+  w.usage['tok-2'] = [10, 30]
+  const clock = world(on, w, TWO_LOGINS)
+  await start($, clock)
+  const notice = w.toasts.filter(t => /^Can't switch accounts/.test(t))
+  expect(notice).toHaveLength(1)
+  expect(notice[0]).toMatch(/starts or reloads plugins\. Fix: quit Claude and run `claude --continue` or `claude --resume`\. Not \/restart, which keeps this account\./)
+  expect(notice[0]).not.toMatch(/\/login/)
+  const pane = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'Pane', requestId: 'claude-accounts', props: PANE_PROPS })
+  expect(await pane.find({ type: 'Text', text: /^Can't switch accounts.*Fix: quit Claude and run `claude --continue`/ })).toBeDefined()
+  await pane.unmount()
+})
+
+test('a switch that does not take, its responses still the old login\'s minutes later, points the session back and marks the old login in use, and the rotation does not try it again', async ($, on) => {
+  const w = fresh()
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
+  w.usage['tok-1'] = [93, 40]
+  w.usage['tok-2'] = [10, 30]
+  const clock = world(on, w, TWO_LOGINS)
+  await start($, clock)
+  expect(w.envSets).toEqual([{ name: 'CLAUDE_SECURESTORAGE_CONFIG_DIR', value: SLOT2 }])
+  // Responses go on reporting login 1's usage.
+  w.limits = [
+    { kind: 'five_hour', percentUsed: 93, resetsAt: '2026-10-12T12:00:00Z' },
+    { kind: 'seven_day', percentUsed: 40, resetsAt: '2026-10-18T03:00:00Z' },
+  ]
+  await clock.advance(5 * 60_000)
+  await $.session.measure({ context: { window: 200_000 }, rateLimits: w.limits, changed: ['rateLimits'] })
+  await clock.settle()
+  expect(w.toasts.filter(t => /did not take: responses still use account 1/.test(t))).toHaveLength(1)
+  expect(w.envSets).toEqual([
+    { name: 'CLAUDE_SECURESTORAGE_CONFIG_DIR', value: SLOT2 },
+    { name: 'CLAUDE_SECURESTORAGE_CONFIG_DIR', value: undefined },
+  ])
+  const pane = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'Pane', requestId: 'claude-accounts', props: PANE_PROPS })
+  const ends = (await pane.findAll({ text: /^(Remove|Use now|● in use)$/ })).filter(e => e.type !== 'Box')
+  expect(ends.map(e => e.text)).toEqual(['● in use', 'Remove', 'Use now'])
+  // Still spent, but the rotation leaves login 2 be.
+  await $.session.measure({ context: { window: 200_000 }, rateLimits: w.limits, changed: ['rateLimits'] })
+  await clock.advance(30 * 60_000)
+  expect(w.envSets).toHaveLength(2)
+  await pane.press({ key: 'use-2' })
+  await clock.settle()
+  expect(w.envSets).toHaveLength(3)
   await pane.unmount()
 })
 
@@ -448,6 +510,8 @@ test('one press on the footer opens the accounts pane, the next closes it', asyn
   const clock = world(on, w, TWO_LOGINS)
   await start($, clock)
   const footer = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+  // Switching works here: no warning beside the glyphs.
+  expect(await footer.find({ key: 'switch-blocked' })).toBeUndefined()
   await footer.press(GLYPHS)
   await clock.settle()
   expect(w.panes).toEqual(['claude-accounts'])
