@@ -43,7 +43,12 @@ Mods are early access in Claude Code, and this one relies on internals a release
 
 Since 2.1.295, Claude Code runs a built-in security default in every session on a Team or Enterprise account, and on any machine with managed settings. It keeps the plugins you install from changing where Claude Code reads its sign-in, which is how this mod switches. In such a session the mod can't switch, and it says so as the session starts and at the top of the panel.
 
-So start Claude Code on a personal account, Pro or Max. From there it moves to your Team seats and back. One catch: since 2.1.299, if plugins reload while a Team account is in use (you install, enable or disable a plugin), the default stays on for the rest of the session. Start a new one.
+So start Claude Code on a personal account, Pro or Max. From there it moves to your Team seats and back.
+
+- **Every new session starts on your normal login**, the one your last `/login` saved. A switch by the mod changes only the session it is made in.
+- **Keep that normal login personal.** If you `/login` with a Team account, every new session starts on Team and can't switch. Run `/login` with your personal account once to fix it.
+- **Add and renew Team seats from the panel** (**+ Add an account**, **Sign in**), not with `/login`. The panel signs each account in to its own folder and leaves your normal login alone.
+- **After a plugin reload on a Team seat, start a new session.** Since 2.1.299, installing, enabling or disabling a plugin while a Team account is in use blocks switching until that session ends.
 
 ### Turning the security default off
 
