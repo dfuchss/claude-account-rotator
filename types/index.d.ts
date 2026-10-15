@@ -25,6 +25,12 @@ export type Account = {
   plan?: string
 }
 
+/**
+ * Who a login's sign-in belongs to, as the profile endpoint answered for the
+ * token `token` digests; the plan as Claude Code reads it from the sign-in.
+ */
+export type Holder = { token: string; who: Pick<Account, 'email' | 'orgId' | 'orgName' | 'plan'> & { email: string } }
+
 /** How the footer draws one of its rows: a glyph per login, or not at all. */
 export type Glyphs = 'bars' | 'pie' | 'braille' | 'none'
 
@@ -61,6 +67,8 @@ export type View = {
   accounts: Account[]
   readings: Record<string, Reading>
   health: Record<string, Health>
+  /** Who each login's sign-in belongs to: a /login in a session on a login signs in there, whoever it signs in. */
+  holders: Record<string, Holder>
   /** The login this session sends its requests with. */
   activeId: string
   /** Set after a switch until a response shows the new login's usage. */

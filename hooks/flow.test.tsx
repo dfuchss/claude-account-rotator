@@ -2,7 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
 import type { On, ProcessRunResult, SessionRateLimit } from 'claude-code'
 
-import { keychainItem, roomColor } from './model'
+import { DEFAULT_FOOTER, keychainItem, roomColor } from './model'
 
 const NOW = Date.parse('2026-10-12T10:00:00Z')
 const HOUR = 3600_000
@@ -21,6 +21,11 @@ type World = {
   files: Record<string, string | null>
   /** access token -> [5-hour %, week %, or null where the plan reports no weekly limit] */
   usage: Record<string, [number, number | null]>
+  /** access token -> the email of the account it signs in, as the profile endpoint answers */
+  owners: Record<string, string>
+  /** The token a /login signs in, where the session reads its sign-in, and its plan. */
+  loginToken?: string
+  loginPlan?: string
   /** slot -> signed-in email */
   emails: Record<string, string>
   envSets: { name: string; value?: string }[]
@@ -37,7 +42,7 @@ type World = {
   refuseEnv?: boolean
 }
 
-const blob = (token: string, expiresAt = NOW + 6 * HOUR) =>
+const blob = (token: string, expiresAt = NOW + 6 * HOUR, plan = 'max') =>
   JSON.stringify({
     claudeAiOauth: {
       accessToken: token,
@@ -45,7 +50,7 @@ const blob = (token: string, expiresAt = NOW + 6 * HOUR) =>
       expiresAt,
       refreshTokenExpiresAt: NOW + 20 * 24 * HOUR,
       scopes: ['user:inference', 'user:profile'],
-      subscriptionType: 'max',
+      subscriptionType: plan,
     },
   })
 
@@ -86,6 +91,15 @@ function world(on: On, w: World, store: Record<string, unknown>): MockClock {
   })
   on('http.fetch', (_$, e) => {
     const token = (e.init?.headers?.Authorization ?? '').replace('Bearer ', '')
+    if (e.url === 'https://api.anthropic.com/api/oauth/profile') {
+      const email = w.owners[token]
+      if (email === undefined) return { value: { status: 404, ok: false, headers: {}, text: '' } }
+      const profile = {
+        account: { uuid: `account-${email}`, email },
+        organization: { uuid: `org-${email}`, name: 'Org', organization_type: 'claude_max' },
+      }
+      return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(profile) } }
+    }
     const usage = w.usage[token]
     if (usage === undefined) return { value: { status: 401, ok: false, headers: {}, text: '' } }
     const [five, week] = usage
@@ -94,6 +108,11 @@ function world(on: On, w: World, store: Record<string, unknown>): MockClock {
       seven_day: week === null ? null : { utilization: week, resets_at: '2026-10-18T03:00:00Z' },
     }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
+  })
+  // Claude Code keeps a /login's sign-in where the session reads its own: the slot it is on.
+  on('command.run', { command: 'login' }, async () => {
+    if (w.loginToken !== undefined) w.keychain[await keychainItem(slot)] = blob(w.loginToken, NOW + 6 * HOUR, w.loginPlan)
+    return { text: 'Login successful' }
   })
   on('prompt.submit', (_$, e) => {
     w.submitted.push(e.text)
@@ -133,6 +152,7 @@ const fresh = (system: World['system'] = 'macOS'): World => ({
   keychain: {},
   files: {},
   usage: {},
+  owners: {},
   emails: {},
   envSets: [],
   spawned: [],
@@ -718,4 +738,159 @@ test('in Terminal.app, which draws block characters from its font, the tile pads
   expect(untiled).toMatchObject({ color: roomColor(90) })
   expect(untiled?.backgroundColor).toBeUndefined()
   await footer.unmount()
+})
+
+const SLOT3 = `${HOME}/.claude/accounts/3`
+const THREE_LOGINS = { accounts: [...TWO_LOGINS.accounts, { id: '3', slot: SLOT3, email: 'three@example.com' }] }
+/** The person types /login at the prompt. */
+const LOGIN = { command: 'login', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 120 } } as const
+
+/** Three logins, each signed in as its own account; the session on login 3, as the mod leaves it after a switch. */
+async function onThree(w: World): Promise<void> {
+  w.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = SLOT3
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
+  w.keychain[await keychainItem(SLOT3)] = blob('tok-3')
+  w.usage['tok-1'] = [20, 30]
+  w.usage['tok-2'] = [10, 30]
+  w.usage['tok-3'] = [40, 50]
+  w.owners = { 'tok-1': 'one@example.com', 'tok-2': 'two@example.com', 'tok-3': 'three@example.com' }
+}
+
+test('a /login in a session on login 3 that signs in login 2\'s account leaves 3 needing its own sign-in, and the session moves to 2', async ($, on) => {
+  const w = fresh()
+  await onThree(w)
+  const clock = world(on, w, THREE_LOGINS)
+  await start($, clock)
+  expect(w.envSets).toEqual([])
+  // The browser was signed in to claude.ai as login 2's account.
+  w.loginToken = 'tok-2b'
+  w.usage['tok-2b'] = [10, 30]
+  w.owners['tok-2b'] = 'two@example.com'
+  await $.command.run(LOGIN)
+  await clock.settle()
+  const band = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'AbovePrompt', props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120, scroll: { offset: 0, bodyRows: 9 }, view: {} } })
+  expect(await band.find({ text: /account 3 \(three@example.com\) needs a sign-in \(signed in as account 2 now\)/ })).toBeDefined()
+  await band.unmount()
+  // The session moves off it, to the login the rotation picks: 2, with the most room.
+  expect(w.envSets).toEqual([{ name: 'CLAUDE_SECURESTORAGE_CONFIG_DIR', value: SLOT2 }])
+  expect(w.toasts.filter(t => /^Switched to Claude account 2 .*: account 3 needs a sign-in\.$/.test(t))).toHaveLength(1)
+  // A later check, its token run out, keeps 3 needing a sign-in: the sign-in it holds is still 2's.
+  w.keychain[await keychainItem(SLOT3)] = blob('tok-2b', NOW + 30 * 60_000)
+  await clock.advance(41 * 60_000)
+  const pane = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'Pane', requestId: 'claude-accounts', props: PANE_PROPS })
+  expect(await pane.find({ text: /^⚠ signed in as account 2 now$/ })).toBeDefined()
+  await pane.unmount()
+  expect(w.envSets).toHaveLength(1)
+})
+
+test('a /login in a session on login 3 that signs in an account not on the list makes 3 that account, and says /login signs in the account the session is on', async ($, on) => {
+  const w = fresh()
+  await onThree(w)
+  const clock = world(on, w, THREE_LOGINS)
+  await start($, clock)
+  w.loginToken = 'tok-x'
+  w.usage['tok-x'] = [5, 10]
+  w.owners['tok-x'] = 'x@example.com'
+  await $.command.run(LOGIN)
+  await clock.settle()
+  expect(w.toasts.filter(t => /^Claude account 3 is x@example.com · Org now: a \/login in a session on account 3 signs in there, not Claude Code's login\.$/.test(t))).toHaveLength(1)
+  expect(w.envSets).toEqual([])
+  const pane = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'Pane', requestId: 'claude-accounts', props: PANE_PROPS })
+  expect(await pane.find({ text: 'x@example.com' })).toBeDefined()
+  expect(await pane.find({ text: 'three@example.com' })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('a /login in a session on login 3 as its own account again, as a new token is, changes nothing', async ($, on) => {
+  const w = fresh()
+  await onThree(w)
+  const clock = world(on, w, THREE_LOGINS)
+  await start($, clock)
+  w.loginToken = 'tok-3b'
+  w.usage['tok-3b'] = [40, 50]
+  w.owners['tok-3b'] = 'three@example.com'
+  await $.command.run(LOGIN)
+  await clock.settle()
+  expect(w.toasts).toEqual([])
+  expect(w.envSets).toEqual([])
+  const pane = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'Pane', requestId: 'claude-accounts', props: PANE_PROPS })
+  expect(await pane.find({ text: /^⚠/ })).toBeUndefined()
+  expect(await pane.find({ text: 'three@example.com' })).toBeDefined()
+  await pane.unmount()
+})
+
+test('the pane names Claude Code\'s own login, where new sessions start, and its plan; on another login it says /login there signs that one in', async ($, on) => {
+  const w = fresh()
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.keychain[await keychainItem(SLOT2)] = blob('tok-2', NOW + 6 * HOUR, 'team')
+  w.usage['tok-1'] = [20, 30]
+  w.usage['tok-2'] = [10, 30]
+  w.owners = { 'tok-1': 'one@example.com', 'tok-2': 'two@example.com' }
+  const clock = world(on, w, TWO_LOGINS)
+  await start($, clock)
+  const pane = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'Pane', requestId: 'claude-accounts', props: PANE_PROPS })
+  expect(await pane.find({ type: 'Text', text: "Claude Code's login: account 1 (one@example.com), personal Max. New sessions start on it." })).toBeDefined()
+  await pane.press({ key: 'rotate' })
+  await clock.settle()
+  await pane.redraw()
+  expect(await pane.find({ type: 'Text', text: /^Claude Code's login: account 1 \(one@example\.com\), personal Max\. New sessions start on it\. \/login in this session signs in account 2 instead\.$/ })).toBeDefined()
+  await pane.unmount()
+})
+
+test('a Team seat as Claude Code\'s own login is told in the pane: new sessions start on it, and can\'t switch', async ($, on) => {
+  const w = fresh()
+  w.keychain['Claude Code-credentials'] = blob('tok-1', NOW + 6 * HOUR, 'team')
+  w.usage['tok-1'] = [20, 30]
+  w.owners = { 'tok-1': 'one@example.com' }
+  const clock = world(on, w, TWO_LOGINS)
+  await start($, clock)
+  const pane = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'Pane', requestId: 'claude-accounts', props: PANE_PROPS })
+  const line = await pane.find({ type: 'Text', text: /^Claude Code's login: account 1 \(one@example\.com\), a Team seat\. New sessions start on it, and can't switch accounts: / })
+  expect(line?.props).toMatchObject({ color: 'warning' })
+  await pane.unmount()
+})
+
+test('a /login on Claude Code\'s login that signs in a Team seat on the list leaves login 1 needing its own sign-in, and the pane names the seat as Claude Code\'s login', async ($, on) => {
+  const w = fresh()
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.keychain[await keychainItem(SLOT2)] = blob('tok-2', NOW + 6 * HOUR, 'team')
+  w.usage['tok-1'] = [20, 30]
+  w.usage['tok-2'] = [10, 30]
+  w.owners = { 'tok-1': 'one@example.com', 'tok-2': 'two@example.com' }
+  const clock = world(on, w, TWO_LOGINS)
+  await start($, clock)
+  w.loginToken = 'tok-2b'
+  w.loginPlan = 'team'
+  w.usage['tok-2b'] = [10, 30]
+  w.owners['tok-2b'] = 'two@example.com'
+  await $.command.run(LOGIN)
+  await clock.settle()
+  expect(w.toasts.filter(t => /^Claude account 1 \(one@example.com · Org\) needs a sign-in \(signed in as account 2 now\)/.test(t))).toHaveLength(1)
+  expect(w.envSets).toEqual([{ name: 'CLAUDE_SECURESTORAGE_CONFIG_DIR', value: SLOT2 }])
+  const pane = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'Pane', requestId: 'claude-accounts', props: PANE_PROPS })
+  const line = await pane.find({ type: 'Text', text: /^Claude Code's login: account 1 \(two@example\.com\), a Team seat\. New sessions start on it, and can't switch accounts: .* \/login in this session signs in account 2 instead\.$/ })
+  expect(line?.props).toMatchObject({ color: 'warning' })
+  await pane.unmount()
+})
+
+test('a view kept from the code before a hot reload, which lacks what this code added, still draws and checks', async ($, on) => {
+  const w = fresh()
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.usage['tok-1'] = [20, 30]
+  w.owners = { 'tok-1': 'one@example.com' }
+  const clock = world(on, w, TWO_LOGINS)
+  // A hot reload keeps the view as the version before this one wrote it, with no `holders`: the first read finds that.
+  const before ={ accounts: TWO_LOGINS.accounts, readings: {}, health: {}, activeId: '1', footer: DEFAULT_FOOTER, rotateTo: 'reset', hasFontBlocks: false }
+  let isKept = false
+  on('state.get', async (_$, e, next) => {
+    const read = await next(e)
+    if (isKept || e.plugin !== 'account-rotator' || e.key !== 'view') return read
+    isKept = true
+    return { value: { value: before, version: read.value?.version ?? 0 } }
+  })
+  await start($, clock)
+  const pane = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'Pane', requestId: 'claude-accounts', props: PANE_PROPS })
+  expect(await pane.find({ type: 'Text', text: "Claude Code's login: account 1 (one@example.com), personal Max. New sessions start on it." })).toBeDefined()
+  await pane.unmount()
 })

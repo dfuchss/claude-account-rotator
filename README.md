@@ -27,6 +27,8 @@ Click it for the panel: each account's usage and reset times, **Sign in**, **Use
 - **Rotates.** Once the account in use is down to 10% of its 5-hour window or 5% of its week, the session moves to another account, and a notice says which and why. **Rotation** in the panel picks which: by default the one whose 5-hour window resets soonest, so room about to refill is used before it does; else the one with the most room, or the next in the list; or **disabled**, which leaves switching to you.
 - **Recovers.** A turn that still hits a usage limit or a rejected sign-in switches accounts and asks Claude to carry on.
 - **Shows what is really in use.** If a switch doesn't take, the footer and panel go back to the old account, and the rotation stops trying the other one for that session.
+- **Follows `/login`.** `/login` signs in the account the session is on, which after a switch isn't Claude Code's login. The mod checks who each account's sign-in belongs to: one that now holds another account's asks for its own again, and the session moves off it; one signed in as an account not on the list becomes that account.
+- **Names Claude Code's login.** The panel's second line says which account new sessions start on, and whether it is personal or a Team or Enterprise seat, whose sessions can't switch.
 - **Warns.** When every account is near its limit, a line above the prompt says when the next one frees up. When an account needs signing in again, the same line says so and signs it in with one click.
 
 ## Requirements
@@ -49,7 +51,7 @@ The mod moves between personal accounts and Team or Enterprise seats. But Claude
 
 The mod tells you when this happens. To keep switching:
 
-- **`/login` with your personal account (Pro or Max).** New sessions always start on your last `/login`. It doesn't unblock the session it runs in: restart Claude after.
+- **`/login` with your personal account (Pro or Max)** in a new session. New sessions start on Claude Code's login, which the panel's second line names; `/login` changes it only in a session on it, and in a session the mod moved, signs in that account instead. It doesn't unblock the session it runs in: restart Claude after.
 - **Add Team seats from the panel**, not `/login`: **+ Add an account**, and **Sign in** to renew.
 - **Restart Claude when blocked:** quit, and run `claude --continue` or `claude --resume` to keep your conversation (or plain `claude`). Each starts on your `/login`. Not `/restart`: it stays on the account in use.
 
@@ -79,7 +81,7 @@ Untested: this follows how Claude Code 2.1.299 describes and reads the setting, 
 ## How it works
 
 - Each account you add gets a folder, `~/.claude/accounts/<n>`, and Claude Code keeps its sign-in in the keychain under that folder's name (on Linux, in that folder's `.credentials.json`), as for any config folder. A switch points the session at another account's sign-in.
-- Its only network traffic: each account's usage every 10 minutes, from the endpoint `/usage` reads, with that account's own token. Tokens stay where Claude Code keeps them; the mod stores each account's email, organization, plan and last usage.
+- Its only network traffic: each account's usage every 10 minutes, from the endpoint `/usage` reads, and once per sign-in who it belongs to, from the one Claude Code asks at a sign-in, each with that account's own token. Tokens stay where Claude Code keeps them; the mod stores each account's email, organization, plan and last usage, and a digest of its token, to tell a new sign-in.
 
 ## Uninstall
 

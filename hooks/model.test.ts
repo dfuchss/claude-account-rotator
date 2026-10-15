@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { RotateTo, View } from '../types'
-import { DEFAULT_FOOTER, availableNow, braille, credentialFrom, credentialsFile, footerStyleFrom, healthOf, isPolicyRefusal, keychainItem, pickTarget, pie, readingFromUsage, rotateToFrom, shouldLeave, roomColor, windowPct } from './model'
+import { DEFAULT_FOOTER, availableNow, braille, credentialFrom, credentialsFile, footerStyleFrom, healthOf, identityFromProfile, isPolicyRefusal, keychainItem, pickTarget, pie, readingFromUsage, rotateToFrom, shouldLeave, roomColor, windowPct } from './model'
 
 const NOW = Date.parse('2026-10-12T10:00:00Z')
 const LATER = '2026-10-12T12:00:00Z'
@@ -22,6 +22,7 @@ function view(
       }),
     ),
     health: Object.fromEntries(ids.map(id => [id, health[id] ?? { kind: 'ok' as const }])),
+    holders: {},
     activeId: '1',
     footer: DEFAULT_FOOTER,
     rotateTo,
@@ -112,6 +113,22 @@ test('a stored login whose refresh token ran out needs a sign-in', () => {
   expect(healthOf(credentialFrom(blob(NOW - 1)), NOW)).toEqual({ kind: 'login-needed', why: 'sign-in expired' })
   expect(healthOf(credentialFrom(blob(NOW + 1000)), NOW).kind).toBe('ok')
   expect(healthOf(credentialFrom('not json'), NOW)).toEqual({ kind: 'login-needed', why: 'not signed in' })
+})
+
+test('reads who a token signs in from the profile endpoint body: its email and organization', () => {
+  const body = {
+    account: { uuid: 'a-1', email: 'you@example.com', full_name: 'You' },
+    organization: { uuid: 'o-1', name: 'Acme', organization_type: 'claude_team', rate_limit_tier: 'default_raven', seat_tier: 'team_standard' },
+  }
+  expect(identityFromProfile(body)).toEqual({ email: 'you@example.com', orgId: 'o-1', orgName: 'Acme' })
+  expect(identityFromProfile({ account: { email: 'you@example.com' } })).toEqual({ email: 'you@example.com' })
+  expect(identityFromProfile({ organization: { uuid: 'o-1' } })).toBeUndefined()
+  expect(identityFromProfile(null)).toBeUndefined()
+})
+
+test('a stored sign-in carries its plan, which Claude Code reads to tell a Team seat, and the refresh token a new sign-in replaces', () => {
+  const text = JSON.stringify({ claudeAiOauth: { accessToken: 't', refreshToken: 'r', expiresAt: NOW, subscriptionType: 'team' } })
+  expect(credentialFrom(text)).toEqual({ accessToken: 't', expiresAt: NOW, refreshToken: 'r', plan: 'team' })
 })
 
 test('names keychain entries as Claude Code does', async () => {

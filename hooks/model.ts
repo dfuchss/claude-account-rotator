@@ -15,6 +15,7 @@ export const EMPTY_VIEW: View = {
   accounts: [],
   readings: {},
   health: {},
+  holders: {},
   activeId: '1',
   footer: DEFAULT_FOOTER,
   rotateTo: DEFAULT_ROTATE_TO,
@@ -170,7 +171,15 @@ export function sameUsage(a: Reading | undefined, b: Reading | undefined, now: n
 }
 
 /** The part of a stored login Claude Code keeps in the keychain (on Linux, a file) that matters here. */
-export type Credential = { accessToken: string; expiresAt: number; refreshTokenExpiresAt?: number }
+export type Credential = {
+  accessToken: string
+  expiresAt: number
+  refreshTokenExpiresAt?: number
+  /** A new sign-in brings a new one. */
+  refreshToken?: string
+  /** `subscriptionType`, the plan Claude Code reads from the sign-in: on a Team or Enterprise one it keeps plugins from switching. */
+  plan?: string
+}
 
 export function credentialFrom(text: string): Credential | undefined {
   let parsed: unknown
@@ -182,12 +191,14 @@ export function credentialFrom(text: string): Credential | undefined {
   }
   const oauth = (parsed as { claudeAiOauth?: unknown } | null)?.claudeAiOauth
   if (typeof oauth !== 'object' || oauth === null) return undefined
-  const { accessToken, expiresAt, refreshTokenExpiresAt } = oauth as Record<string, unknown>
+  const { accessToken, expiresAt, refreshTokenExpiresAt, refreshToken, subscriptionType } = oauth as Record<string, unknown>
   if (typeof accessToken !== 'string' || typeof expiresAt !== 'number') return undefined
   return {
     accessToken,
     expiresAt,
     ...(typeof refreshTokenExpiresAt === 'number' ? { refreshTokenExpiresAt } : {}),
+    ...(typeof refreshToken === 'string' ? { refreshToken } : {}),
+    ...(typeof subscriptionType === 'string' ? { plan: subscriptionType } : {}),
   }
 }
 
@@ -296,9 +307,17 @@ export function label(account: Account | undefined): string {
  */
 export async function keychainItem(slot: string): Promise<string> {
   if (slot === '') return 'Claude Code-credentials'
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(slot.normalize('NFC')))
-  const hex = [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('')
-  return `Claude Code-credentials-${hex.slice(0, 8)}`
+  return `Claude Code-credentials-${(await sha256(slot.normalize('NFC'))).slice(0, 8)}`
+}
+
+async function sha256(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+/** A digest of a sign-in's token: tells a new sign-in from the one asked about, without keeping the token. */
+export async function fingerprint(token: string): Promise<string> {
+  return (await sha256(token)).slice(0, 16)
 }
 
 /**
@@ -397,5 +416,45 @@ export function identityFromStatus(stdout: string): Identity | undefined {
 /** The same login: one email in one organization. */
 export function sameLogin(a: Identity, b: Identity): boolean {
   return a.email !== undefined && a.email === b.email && (a.orgId ?? '') === (b.orgId ?? '')
+}
+
+/** A listed login is the account `who` signed in as, as far as it is known: by its email, and its organization once known. */
+export function isLoginOf(a: Identity, who: Identity): boolean {
+  return a.email !== undefined && a.email === who.email && (a.orgId === undefined || a.orgId === who.orgId)
+}
+
+/**
+ * Who a token signs in, from the body of GET /api/oauth/profile, which Claude
+ * Code asks at a sign-in: email and organization. The plan is the sign-in's own.
+ */
+export function identityFromProfile(body: unknown): Identity | undefined {
+  const field = (value: unknown, key: string) => (typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined)
+  const { account, organization } = (typeof body === 'object' && body !== null ? body : {}) as Record<string, unknown>
+  const [email, orgId, orgName] = [field(account, 'email'), field(organization, 'uuid'), field(organization, 'name')]
+  if (typeof email !== 'string' || email === '') return undefined
+  return {
+    email,
+    ...(typeof orgId === 'string' ? { orgId } : {}),
+    ...(typeof orgName === 'string' ? { orgName } : {}),
+  }
+}
+
+/** A Team or Enterprise plan: Claude Code keeps plugins from switching accounts in a session that starts on one. */
+export const isSeatPlan = (plan: string | undefined): boolean => plan === 'team' || plan === 'enterprise'
+
+/** A plan as the pane names it: personal Max or Pro, or a Team or Enterprise seat. */
+export function planText(plan: string): string {
+  switch (plan) {
+    case 'max':
+      return 'personal Max'
+    case 'pro':
+      return 'personal Pro'
+    case 'team':
+      return 'a Team seat'
+    case 'enterprise':
+      return 'an Enterprise seat'
+    default:
+      return plan
+  }
 }
 

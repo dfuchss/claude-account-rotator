@@ -13,6 +13,7 @@ import type { EngineInterface, ProcessRunResult, Register, SessionRateLimit } fr
 const MOD = 'account-rotator'
 const HOME = '/home/you'
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
+const PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile'
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
@@ -92,6 +93,12 @@ function fill(wall: number): void {
 const usageOf = (l: Login) => ({
   five_hour: { utilization: Math.round(l.five), resets_at: iso(l.fiveResets) },
   seven_day: { utilization: Math.round(l.week), resets_at: iso(l.weekResets) },
+})
+
+/** Who a login's token signs in, as the profile endpoint answers: the organization the store names. */
+const profileOf = (l: Login) => ({
+  account: { uuid: `account-${l.id}`, email: l.email },
+  organization: { uuid: `org-${l.id}`, name: l.orgName, organization_type: `claude_${l.plan}` },
 })
 
 const limitsOf = (l: Login): SessionRateLimit[] => [
@@ -220,12 +227,13 @@ export const register: Register = on => {
   })
 
   on('http.fetch', async ($, e, next) => {
-    if (next.origin.plugin !== MOD || e.url !== USAGE_URL) return next(e)
+    if (next.origin.plugin !== MOD || (e.url !== USAGE_URL && e.url !== PROFILE_URL)) return next(e)
     fill(await $.clock.now())
     const token = (e.init?.headers?.Authorization ?? '').replace('Bearer ', '')
     const l = logins.find(x => `demo-${x.id}` === token && x.isSignedIn)
     if (l === undefined) return { value: { status: 401, ok: false, headers: {}, text: '' } }
-    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(usageOf(l)) } }
+    const body = e.url === PROFILE_URL ? profileOf(l) : usageOf(l)
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
   })
 
   // What the session's last response reported, for the mod's check that a switch took.

@@ -9,17 +9,20 @@ import type {
   Timer,
 } from 'claude-code'
 
-import type { Account, FooterStyle, Health, Reading, RotateTo, View } from '../types'
+import type { Account, FooterStyle, Health, Holder, Reading, RotateTo, View } from '../types'
 import {
   EMPTY_VIEW,
   LEAVE_FIVE_HOUR,
   blockedText,
   credentialFrom,
   credentialsFile,
+  fingerprint,
   footerStyleFrom,
   freeId,
   healthOf,
+  identityFromProfile,
   identityFromStatus,
+  isLoginOf,
   isOnNormalLogin,
   isPolicyRefusal,
   keychainItem,
@@ -57,6 +60,8 @@ const CONFIRM_GIVE_UP_MS = 4 * 60_000
 const REFRESH_GUARD_MS = 8 * 60_000
 /** A file only macOS has: there Claude Code keeps logins in the keychain, elsewhere (Linux) in a file each. */
 const MACOS_MARKER = '/System/Library/CoreServices/SystemVersion.plist'
+const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
+const PROFILE_URL = 'https://api.anthropic.com/api/oauth/profile'
 const CONTINUE =
   'Claude Code switched to another of your Claude accounts because the previous one hit its usage limit or lost its sign-in. Continue where you left off.'
 
@@ -85,8 +90,10 @@ const untaken = new Set<string>()
 // key of its own, so sessions writing different logins never collide, the
 // footer's look, and which login the rotation moves to.
 
-const getView = ($: Host): Promise<View> => read($, viewAtom)
-const setView = ($: Host, fn: (v: View) => View): Promise<View> => update($, viewAtom, fn)
+/** The view survives a hot reload as the code before wrote it: what this code added starts as in a new session. */
+const current = (v: View): View => ({ ...EMPTY_VIEW, ...v })
+const getView = async ($: Host): Promise<View> => current(await read($, viewAtom))
+const setView = ($: Host, fn: (v: View) => View): Promise<View> => update($, viewAtom, v => fn(current(v)))
 /** Something the person should know that nothing on screen says: a toast, on screen for a while. */
 const tell = ($: Host, text: string) => $.ui.toast(text, { timeoutMs: 8000 })
 const debug = ($: Host, text: string) => $.ui.log(`account-rotator: ${text}`, { to: 'debug' })
@@ -120,22 +127,33 @@ async function saveHealth($: Host, id: string, health: Health): Promise<Health |
   return before
 }
 
+async function saveHolder($: Host, id: string, holder: Holder): Promise<void> {
+  await $.store.set(`holder:${id}`, holder)
+  await setView($, v => ({ ...v, holders: { ...v.holders, [id]: holder } }))
+}
+
 /** Folds what other sessions stored into this session's view. */
 async function mergeStore($: Host): Promise<void> {
   const accounts = await loadAccounts($)
   const readings: Record<string, Reading> = {}
   const health: Record<string, Health> = {}
+  const holders: Record<string, Holder> = {}
   for (const a of accounts) {
     const r = await $.store.get(`reading:${a.id}`)
     if (typeof r === 'object' && r !== null && typeof (r as Reading).at === 'number') readings[a.id] = r as Reading
     const h = await $.store.get(`health:${a.id}`)
     if (typeof h === 'object' && h !== null && typeof (h as Health).kind === 'string') health[a.id] = h as Health
+    const s = await $.store.get(`holder:${a.id}`)
+    if (typeof s === 'object' && s !== null && typeof (s as Holder).token === 'string' && typeof (s as Holder).who?.email === 'string') {
+      holders[a.id] = s as Holder
+    }
   }
   const footer = footerStyleFrom(await $.store.get('footer'))
   const rotateTo = rotateToFrom(await $.store.get('rotate-to'))
   await setView($, v => {
     const nextReadings: Record<string, Reading> = {}
     const nextHealth: Record<string, Health> = {}
+    const nextHolders: Record<string, Holder> = {}
     for (const a of accounts) {
       const mine = v.readings[a.id]
       const theirs = readings[a.id]
@@ -144,8 +162,10 @@ async function mergeStore($: Host): Promise<void> {
       const own = v.health[a.id]
       const h = signingIn === a.id ? own : (health[a.id] ?? own)
       if (h !== undefined) nextHealth[a.id] = h
+      const holder = holders[a.id] ?? v.holders[a.id]
+      if (holder !== undefined) nextHolders[a.id] = holder
     }
-    return { ...v, accounts, readings: nextReadings, health: nextHealth, footer, rotateTo }
+    return { ...v, accounts, readings: nextReadings, health: nextHealth, holders: nextHolders, footer, rotateTo }
   })
 }
 
@@ -193,15 +213,15 @@ async function readCredentialsFile($: Host, slot: string): Promise<Stored> {
 
 type UsageAnswer = { kind: 'ok'; body: unknown } | { kind: 'rejected' } | { kind: 'failed'; status: number }
 
+const oauthHeaders = (accessToken: string) => ({
+  Authorization: `Bearer ${accessToken}`,
+  'anthropic-beta': 'oauth-2025-04-20',
+  'Content-Type': 'application/json',
+})
+
 /** The usage of the login a token belongs to, as `/usage` reads it. */
 async function fetchUsage($: Host, accessToken: string): Promise<UsageAnswer> {
-  const res = await $.http.fetch('https://api.anthropic.com/api/oauth/usage', {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'anthropic-beta': 'oauth-2025-04-20',
-      'Content-Type': 'application/json',
-    },
-  })
+  const res = await $.http.fetch(USAGE_URL, { headers: oauthHeaders(accessToken) })
   if (res.status === 401 || res.status === 403) return { kind: 'rejected' }
   if (!res.ok) return { kind: 'failed', status: res.status }
   try {
@@ -209,6 +229,18 @@ async function fetchUsage($: Host, accessToken: string): Promise<UsageAnswer> {
   } catch {
     // A 2xx that is not JSON counts as a failed call; the next check asks again.
     return { kind: 'failed', status: res.status }
+  }
+}
+
+/** Who a token signs in, as Claude Code asks at a sign-in: email, organization and plan; undefined when the call fails. */
+async function fetchIdentity($: Host, accessToken: string): Promise<Identity | undefined> {
+  const res = await $.http.fetch(PROFILE_URL, { headers: oauthHeaders(accessToken) })
+  if (!res.ok) return undefined
+  try {
+    return identityFromProfile(JSON.parse(res.text))
+  } catch {
+    // A body that is not JSON says nothing of who; the next check asks again.
+    return undefined
   }
 }
 
@@ -263,7 +295,57 @@ async function announceLockout($: Host, account: Account, why: string): Promise<
   await $.ui.notify(text, { title: TITLE })
 }
 
-/** Re-reads one login's stored sign-in and, while its token is live, its usage. */
+/**
+ * Who a login's sign-in belongs to: as answered for its token before, else
+ * asked while the token is live. A /login in a session on a login signs in
+ * there, and a new sign-in brings a new token, so it is asked about again.
+ */
+async function holderOf($: Host, account: Account, credential: Credential, isLive: boolean): Promise<Holder | undefined> {
+  const token = await fingerprint(credential.refreshToken ?? credential.accessToken)
+  const known = (await getView($)).holders[account.id]
+  if (known?.token === token) return known
+  if (!isLive) return undefined
+  const who = await fetchIdentity($, credential.accessToken)
+  if (who?.email === undefined) return undefined
+  const holder = { token, who: { ...who, email: who.email, ...(credential.plan === undefined ? {} : { plan: credential.plan }) } }
+  await saveHolder($, account.id, holder)
+  return holder
+}
+
+/**
+ * A login's sign-in belongs to `who`. Another login on the list: this one
+ * holds that one's sign-in, answered so it asks for its own again. Else the
+ * login is who signed in, its name and plan kept current, and told when that
+ * is another account than before: a /login in a session on it did that.
+ */
+async function followSignIn($: Host, account: Account, who: Identity): Promise<Account | undefined> {
+  const accounts = await loadAccounts($)
+  const own = accounts.find(a => a.id === account.id)
+  if (own === undefined) return undefined
+  const isSame = own.email === undefined || isLoginOf(own, who)
+  const twin = isSame ? undefined : accounts.find(a => a.id !== own.id && isLoginOf(a, who))
+  if (twin !== undefined) return twin
+  const followed = { ...own, ...who }
+  if (followed.email !== own.email || followed.orgId !== own.orgId || followed.orgName !== own.orgName || followed.plan !== own.plan) {
+    await saveAccounts($, accounts.map(a => (a.id === own.id ? followed : a)))
+  }
+  if (!isSame) {
+    const name = `${followed.email}${followed.orgName ? ` · ${followed.orgName}` : ''}`
+    tell(
+      $,
+      own.slot === ''
+        ? `Claude Code's login, account ${own.id}, is ${name} now: new sessions start on it.`
+        : `Claude account ${own.id} is ${name} now: a /login in a session on account ${own.id} signs in there, not Claude Code's login.`,
+    )
+  }
+  return undefined
+}
+
+/**
+ * Re-reads one login's stored sign-in: who it belongs to and, while its token
+ * is live, its usage. One that is another login's on the list leaves this
+ * login needing its own, its usage that other's.
+ */
 async function checkAccount($: Host, account: Account): Promise<void> {
   const now = await $.clock.now()
   if (signingIn === account.id) return
@@ -274,13 +356,19 @@ async function checkAccount($: Host, account: Account): Promise<void> {
   }
   const credential = stored.state === 'present' ? stored.credential : undefined
   let health = healthOf(credential, now)
-  if (health.kind === 'ok' && credential !== undefined && credential.expiresAt > now + 60_000) {
-    const usage = await fetchUsage($, credential.accessToken)
-    if (usage.kind === 'rejected') health = { kind: 'login-needed', why: 'sign-in rejected' }
-    if (usage.kind === 'failed') await debug($, `usage for account ${account.id}: HTTP ${usage.status}`)
-    if (usage.kind === 'ok') {
-      const reading = readingFromUsage(usage.body, now)
-      if (reading !== undefined) await saveReading($, account.id, reading)
+  if (health.kind === 'ok' && credential !== undefined) {
+    const isLive = credential.expiresAt > now + 60_000
+    const holder = await holderOf($, account, credential, isLive)
+    const twin = holder === undefined ? undefined : await followSignIn($, account, holder.who)
+    if (twin !== undefined) health = { kind: 'login-needed', why: `signed in as account ${twin.id} now` }
+    else if (isLive) {
+      const usage = await fetchUsage($, credential.accessToken)
+      if (usage.kind === 'rejected') health = { kind: 'login-needed', why: 'sign-in rejected' }
+      if (usage.kind === 'failed') await debug($, `usage for account ${account.id}: HTTP ${usage.status}`)
+      if (usage.kind === 'ok') {
+        const reading = readingFromUsage(usage.body, now)
+        if (reading !== undefined) await saveReading($, account.id, reading)
+      }
     }
   }
   const before = await saveHealth($, account.id, health)
@@ -543,12 +631,15 @@ async function removeAccount($: Host, id: string): Promise<void> {
   await saveAccounts($, view.accounts.filter(a => a.id !== id))
   await $.store.delete(`reading:${id}`)
   await $.store.delete(`health:${id}`)
+  await $.store.delete(`holder:${id}`)
   await setView($, v => {
     const readings = { ...v.readings }
     const health = { ...v.health }
+    const holders = { ...v.holders }
     delete readings[id]
     delete health[id]
-    return { ...v, readings, health, removing: undefined }
+    delete holders[id]
+    return { ...v, readings, health, holders, removing: undefined }
   })
 }
 
@@ -558,6 +649,14 @@ async function removeAccount($: Host, id: string): Promise<void> {
 function togglePane($: Host): Promise<unknown> {
   isPaneShown = !isPaneShown
   return isPaneShown ? $.ui.open({ id: PANE, title: TITLE, columns: PANE_COLUMNS }) : $.ui.close({ id: PANE })
+}
+
+/** After a /login, which signs in the login this session is on: who it is now, and a move off it when that is another login's account. */
+async function checkActive($: Host): Promise<void> {
+  const view = await getView($)
+  const active = view.accounts.find(a => a.id === view.activeId)
+  if (active !== undefined) await checkAccount($, active)
+  await maybeRotate($)
 }
 
 /** Rotate now: moves to the login the pane's Rotation setting picks, as the rotation would once this one runs low; with it off, the most room. */
@@ -617,13 +716,14 @@ async function boot($: Host): Promise<void> {
   await mergeStore($)
   await setView($, v => ({ ...v, activeId }))
   await checkSwitching($, slot)
-  for (const account of accounts.filter(a => a.email === undefined || a.orgId === undefined)) {
+  // A live sign-in names its login as it checks; one whose token has run out, from what `claude auth login` left in its folder.
+  await checkAll($)
+  for (const account of (await loadAccounts($)).filter(a => a.email === undefined || a.orgId === undefined)) {
     const who = await signedInAs($, account.slot)
     if (who === undefined) continue
     const latest = await loadAccounts($)
     await saveAccounts($, latest.map(a => (a.id === account.id ? { ...a, ...who } : a)))
   }
-  await checkAll($)
 }
 
 export const register: Register = on => {
@@ -655,6 +755,13 @@ export const register: Register = on => {
   on('classic.StopFailure', async ($, e, next) => {
     void onStopFailure($, e.error).catch(error => debug($, `stop failure handling failed: ${String(error)}`))
     return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // Typed at the prompt, /login answers once its sign-in is done; run mid-turn, at once, and the checks find it later.
+  on('command.run', { command: 'login' }, async ($, e, next) => {
+    const ran = await next(e)
+    void checkActive($).catch(error => debug($, `check after /login failed: ${String(error)}`))
+    return ran
   }).catch(($, e, next) => next(e))
 
   on('ui.close', async ($, e, next) => {

@@ -10,8 +10,10 @@ import {
   blockedAdvice,
   glyph,
   isOnNormalLogin,
+  isSeatPlan,
   longBar,
   nextReset,
+  planText,
   roomColor,
   roomLeft,
   shown,
@@ -519,9 +521,34 @@ function blockedRule(view: View): string {
 }
 
 /**
- * The pane: when the rotation moves on (or that it can't), then every account, its usage and what
- * can be done with it, then where the rotation moves to and the footer's
- * settings, each group in its box.
+ * Claude Code's own login, the one new sessions start on, as its sign-in
+ * says: whose account it is, and its plan, a Team or Enterprise one keeping
+ * those sessions from switching. In a session on another login, /login signs
+ * in that one instead.
+ */
+function LoginLine({ Text }: Ui, view: View) {
+  const normal = view.accounts.find(a => a.slot === '')
+  if (normal === undefined) return undefined
+  const who = view.holders[normal.id]?.who ?? normal
+  const isSeat = isSeatPlan(who.plan)
+  const text = [
+    `Claude Code's login: account ${normal.id}${who.email === undefined ? '' : ` (${who.email})`}${who.plan === undefined ? '' : `, ${planText(who.plan)}`}.`,
+    isSeat
+      ? "New sessions start on it, and can't switch accounts: /login with your personal (Pro or Max) account in a session on it, then restart Claude."
+      : 'New sessions start on it.',
+    ...(view.activeId === normal.id ? [] : [`/login in this session signs in account ${view.activeId} instead.`]),
+  ]
+  return (
+    <Text key="login" color={isSeat ? 'warning' : undefined} dimColor={!isSeat}>
+      {text.join(' ')}
+    </Text>
+  )
+}
+
+/**
+ * The pane: when the rotation moves on (or that it can't), and Claude Code's
+ * own login, then every account, its usage and what can be done with it, then
+ * where the rotation moves to and the footer's settings, each group in its box.
  */
 export function Pane(ui: Ui, view: View, now: number, act: Actions) {
   const { Box, Text, Button } = ui
@@ -536,6 +563,7 @@ export function Pane(ui: Ui, view: View, now: number, act: Actions) {
   return (
     <Box flexDirection="column" rowGap={1}>
       {view.isSwitchBlocked ? <Text color="warning">{blockedRule(view)}</Text> : <Text dimColor>{rule(view.footer.fill, view.rotateTo)}</Text>}
+      {LoginLine(ui, view)}
       {section(ui, 'accounts', 'Accounts', accounts)}
       {RotationSettings(ui, view, act)}
       {FooterSettings(ui, view, act)}
