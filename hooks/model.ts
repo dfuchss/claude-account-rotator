@@ -460,7 +460,7 @@ export function chromeNote(view: View, kind: ChromeNoteKind): string {
     case 'unset':
       return (
         `${found} The user's Chrome extension answers only the Claude account it is signed in to, and the account-rotator mod doesn't know which one that is. ` +
-        `Ask the user to press Use this account next to it under Chrome in the Claude accounts panel (click the usage under the prompt; under Look for Chrome on another account if it isn't listed). You'll get a message once it's connected. ${noLogin}`
+        `Ask the user to press Use this account next to it under Chrome in the Claude accounts panel (click the usage under the prompt). You'll get a message once it's connected. ${noLogin}`
       )
   }
 }

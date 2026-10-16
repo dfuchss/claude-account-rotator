@@ -993,12 +993,8 @@ test('before the rotation moves the session off Claude Code\'s login, Claude in 
   expect(await pane.find({ type: 'Text', text: 'Active Claude extension accounts from your Chrome windows:' })).toBeDefined()
   expect((await pane.find({ key: 'chrome-row-1' }))?.text).toMatch(/● in use$/)
   expect(await pane.find({ key: 'chrome-use-1' })).toBeUndefined()
-  // Login 2 has answered no browser call: it waits behind the press that lists the rest.
-  expect(await pane.find({ key: 'chrome-use-2' })).toBeUndefined()
-  await pane.press({ key: 'chrome-find' })
-  await clock.settle()
-  await pane.redraw()
-  expect(await pane.find({ key: 'chrome-use-2' })).toBeDefined()
+  // No Chrome extension has answered as login 2: it isn't listed.
+  expect(await pane.find({ key: 'chrome-row-2' })).toBeUndefined()
   await pane.unmount()
 })
 
@@ -1109,6 +1105,16 @@ test('a session Claude Code stops from switching, on another account than the ex
   await band.unmount()
   expect(w.envSets).toEqual([])
   expect(w.commands).toEqual([])
+  // Connected as login 1 after all, the box still says why it offers no other account.
+  await clock.advance(61_000)
+  w.chrome.as = ''
+  expect((await browse($, 'tabs_context_mcp')).isError).toBeUndefined()
+  const pane = await mountPane($)
+  expect(await pane.find({ key: 'chrome-use-2' })).toBeUndefined()
+  expect(
+    await pane.find({ type: 'Text', text: "⚠ This window can't switch accounts, so Chrome can't move to another one here. Quit, then run: claude --resume session-1" }),
+  ).toBeDefined()
+  await pane.unmount()
 })
 
 test('with no account named for the Chrome extension, a browser call that finds no browser has Claude ask which it is; picked in the pane, Connect connects there, comes back, and tells Claude to carry on', async ($, on) => {
@@ -1130,17 +1136,15 @@ test('with no account named for the Chrome extension, a browser call that finds 
   expect(w.panes).toEqual(['claude-accounts'])
   await band.unmount()
   const pane = await mountPane($)
-  expect(await pane.find({ type: 'Text', text: 'None yet.' })).toBeDefined()
-  await pane.press({ key: 'chrome-find' })
-  await clock.settle()
-  await pane.redraw()
+  expect(await pane.find({ type: 'Text', text: 'No Chrome extension found yet. Which account is yours signed in to?' })).toBeDefined()
+  expect(await pane.find({ key: 'chrome-use-2' })).toBeDefined()
   await pane.press({ key: 'chrome-use-1' })
   await clock.settle()
   expect(slots(w)).toEqual([''])
   await clock.advance(36_000)
   await pane.redraw()
   expect((await pane.find({ key: 'chrome-row-1' }))?.text).toMatch(/● in use$/)
-  expect(await pane.find({ type: 'Text', text: 'None yet.' })).toBeUndefined()
+  expect(await pane.find({ key: 'chrome-row-2' })).toBeUndefined()
   await pane.unmount()
   // Back on login 2, where the session was; Claude is told once that lands.
   expect(slots(w)).toEqual(['', SLOT2])
@@ -1210,7 +1214,7 @@ test('a guess at Claude Code\'s login that finds no browser leaves the extension
   expect(w.chromeAsked).toEqual([''])
   expect(w.toasts.filter(t => /^Claude in Chrome connects as/.test(t))).toEqual([])
   const pane = await mountPane($)
-  expect(await pane.find({ type: 'Text', text: 'None yet.' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'No Chrome extension found yet. Which account is yours signed in to?' })).toBeDefined()
   // Back on login 1 and off it again: no second guess.
   await pane.press({ key: 'use-1' })
   await clock.settle()
@@ -1247,7 +1251,7 @@ test('a session without Claude in Chrome is asked once, and its pane has no Chro
   expect(w.envSets).toHaveLength(3)
   expect(w.chromeAsked).toEqual([''])
   await pane.redraw()
-  expect(await pane.find({ key: 'chrome-find' })).toBeUndefined()
+  expect(await pane.find({ key: 'chrome-row-1' })).toBeUndefined()
   expect(await pane.find({ text: /Chrome/ })).toBeUndefined()
   await pane.unmount()
 })

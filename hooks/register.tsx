@@ -711,7 +711,6 @@ function connectChrome($: Host, isQuiet = false): Promise<void> {
 /** Use this account: Claude in Chrome connects as it, in this session now and in every session from now on. */
 async function useChromeAccount($: Host, id: string): Promise<void> {
   await setChromeAccount($, id)
-  await setView($, v => ({ ...v, isFindingChrome: false }))
   await connectChrome($)
 }
 
@@ -968,7 +967,6 @@ function actions($: Host): Actions {
     setFooter: change => background(setFooter($, change)),
     setRotateTo: rotateTo => background(setRotateTo($, rotateTo)),
     useChromeAccount: id => background(useChromeAccount($, id)),
-    findChrome: () => background(setView($, v => ({ ...v, isFindingChrome: !v.isFindingChrome }))),
     connectChrome: () => background(connectChrome($)),
     setDemo: on => background(setView($, v => ({ ...v, demo: on }))),
   }

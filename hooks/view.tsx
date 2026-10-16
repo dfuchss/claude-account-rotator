@@ -38,7 +38,6 @@ export type Actions = {
   setFooter: (change: Partial<FooterStyle>) => void
   setRotateTo: (rotateTo: RotateTo) => void
   useChromeAccount: (id: string) => void
-  findChrome: () => void
   connectChrome: () => void
   setDemo: (on: boolean) => void
 }
@@ -391,31 +390,27 @@ function chromeRow(ui: Ui, view: View, a: Account, act: Actions) {
 }
 
 /**
- * Claude in Chrome: the accounts a Chrome extension has answered as, the one
- * this window's Chrome is connected as in use, as in Accounts, the others a
- * press away; what keeps it from working, under them; and the accounts none
- * has answered as yet, on request.
+ * Claude in Chrome: the accounts a Chrome extension has answered as, and the
+ * one picked for it, the one this window's Chrome is connected as in use, as
+ * in Accounts, the others a press away; then what keeps it from working. With
+ * none found yet, every account, to pick the extension's.
  */
 function ChromeSettings(ui: Ui, view: View, act: Actions) {
-  const { Box, Text, Button } = ui
+  const { Text } = ui
   if (view.hasChrome === false) return section(ui, 'chrome', 'Chrome', [<Text key="chrome-none" dimColor>Not available in this window.</Text>])
-  const seen = view.accounts.filter(a => view.chromeAccountIds?.includes(a.id))
-  const others = view.accounts.filter(a => !view.chromeAccountIds?.includes(a.id))
-  const problem = chromeProblem(view)
+  const found = view.accounts.filter(a => view.chromeAccountIds?.includes(a.id) || a.id === view.chromeAccountId)
+  // A window that can't switch accounts has no Use this account but on its own: it says why, once.
+  const isStuck = view.isSwitchBlocked === true && (found.length === 0 ? view.accounts : found).some(a => a.id !== view.activeId)
+  const problem =
+    chromeProblem(view) ?? (isStuck ? `This window can't switch accounts, so Chrome can't move to another one here. Quit, then run: ${resumeCommand(view)}` : undefined)
   return section(ui, 'chrome', 'Chrome', [
-    <Text key="chrome-intro" dimColor>Active Claude extension accounts from your Chrome windows:</Text>,
-    ...(seen.length === 0 ? [<Text key="chrome-empty" dimColor>None yet.</Text>] : seen.map(a => chromeRow(ui, view, a, act))),
+    found.length === 0 ? (
+      <Text key="chrome-intro" dimColor>No Chrome extension found yet. Which account is yours signed in to?</Text>
+    ) : (
+      <Text key="chrome-intro" dimColor>Active Claude extension accounts from your Chrome windows:</Text>
+    ),
+    ...(found.length === 0 ? view.accounts : found).map(a => chromeRow(ui, view, a, act)),
     ...(problem === undefined ? [] : [<Text key="chrome-problem" color="warning">{`⚠ ${problem}`}</Text>]),
-    ...(others.length === 0
-      ? []
-      : [
-          <Box key="chrome-find-row">
-            <Button key="chrome-find" plain onPress={act.findChrome}>
-              <Text dimColor>{`${view.isFindingChrome ? '▾' : '▸'} Look for Chrome on another account`}</Text>
-            </Button>
-          </Box>,
-          ...(view.isFindingChrome ? others.map(a => chromeRow(ui, view, a, act)) : []),
-        ]),
   ])
 }
 
