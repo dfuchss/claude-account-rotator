@@ -35,6 +35,8 @@ export type Actions = {
   remove: (id: string) => void
   setFooter: (change: Partial<FooterStyle>) => void
   setRotateTo: (rotateTo: RotateTo) => void
+  setChromeAccount: (id: string) => void
+  reconnectChrome: () => void
   setDemo: (on: boolean) => void
 }
 
@@ -335,6 +337,101 @@ function RotationSettings(ui: Ui, view: View, act: Actions) {
   ])
 }
 
+/** An account as the band names it: its number, and its email once known. */
+function named(view: View, id: string): string {
+  const email = view.accounts.find(a => a.id === id)?.email
+  return email === undefined ? id : `${id} (${email})`
+}
+
+/** How Claude in Chrome stands, as the pane says it: the account it connected as, and whether a browser answered there. */
+function chromeState(view: View): { text: string; isWarning: boolean } {
+  const own = view.chromeAccountId
+  const link = view.chrome
+  if (view.chromeConnecting !== undefined) return { text: `◌ Reconnecting as account ${view.chromeConnecting}…`, isWarning: true }
+  if (own === undefined) {
+    return { text: "Pick the account your Chrome extension is signed in to: it answers only that one. The extension's settings show its email.", isWarning: false }
+  }
+  if (view.hasChrome === false) return { text: 'This session runs without Claude in Chrome.', isWarning: false }
+  if (link === undefined) {
+    return view.activeId === own
+      ? { text: `Connects as account ${own}, the one in use, at the first browser call, or before the rotation moves the session off it.`, isWarning: false }
+      : { text: `Not connected yet. It would connect as account ${view.activeId}, the one in use: Reconnect Chrome connects it as account ${own}.`, isWarning: false }
+  }
+  if (link.isPaired) {
+    return link.as === undefined || link.as === own
+      ? { text: `Connected as account ${own}: it stays so as the rotation moves the session.`, isWarning: false }
+      : { text: `Connected as account ${link.as}, where a browser answers.`, isWarning: false }
+  }
+  if (link.as === own) return { text: `Connected as account ${own} and found no browser: is Chrome open?`, isWarning: true }
+  const as = link.as === undefined ? 'Found no browser' : `Connected as account ${link.as} and found no browser`
+  return { text: `${as}: your extension answers only account ${own}.`, isWarning: true }
+}
+
+/**
+ * Claude in Chrome: the account the Chrome extension is signed in to, picked
+ * here for every session, how the connection stands, and a press that
+ * reconnects it as that account.
+ */
+function ChromeSettings(ui: Ui, view: View, act: Actions) {
+  const { Box, Text, Button } = ui
+  const { text, isWarning } = chromeState(view)
+  const own = view.chromeAccountId
+  const canReconnect =
+    own !== undefined && view.chromeConnecting === undefined && view.hasChrome !== false && (!view.isSwitchBlocked || view.activeId === own)
+  return section(ui, 'chrome', 'Chrome', [
+    choice(ui, 'chrome-account', 'Account', view.accounts.map(a => [a.id, a.id] as const), view.chromeAccountId ?? '', act.setChromeAccount),
+    <Text key="chrome-state" color={isWarning ? 'warning' : undefined} dimColor={!isWarning}>
+      {text}
+    </Text>,
+    ...(canReconnect
+      ? [
+          <Box key="chrome-press">
+            <Button key="chrome-reconnect" onPress={act.reconnectChrome}>Reconnect Chrome</Button>
+          </Box>,
+        ]
+      : []),
+  ])
+}
+
+/**
+ * The band while a browser call found no browser, or Reconnect Chrome is under
+ * way: the account Claude in Chrome connected as, the one the extension
+ * answers, and the press that reconnects it there.
+ */
+function ChromeBand(ui: Ui, view: View, act: Actions) {
+  const { Box, Text, Button } = ui
+  if (view.chromeConnecting !== undefined) {
+    return <Text color="warning">◌ Reconnecting Claude in Chrome as account {named(view, view.chromeConnecting)}…</Text>
+  }
+  const link = view.chrome
+  if (!link?.hasFailed) return undefined
+  const as = link.as === undefined ? '' : ` as account ${link.as}`
+  const own = view.chromeAccountId
+  if (own === undefined) {
+    return (
+      <Box flexDirection="row" columnGap={2}>
+        <Text color="warning">⚠ Claude in Chrome found no browser{as}. Which account is your Chrome extension signed in to?</Text>
+        <Button key="chrome-pick" onPress={act.togglePane}>Pick it</Button>
+      </Box>
+    )
+  }
+  const text =
+    link.as === own
+      ? `⚠ Claude in Chrome found no browser as account ${named(view, own)}, your extension's: is Chrome open?`
+      : `⚠ Claude in Chrome found no browser${as}: your Chrome extension answers only account ${named(view, own)}.`
+  const canMove = !view.isSwitchBlocked || view.activeId === own
+  return (
+    <Box flexDirection="row" columnGap={2}>
+      <Text color="warning">{text}</Text>
+      {canMove && (
+        <Button key="chrome-reconnect-band" variant="primary" onPress={act.reconnectChrome}>
+          Reconnect Chrome
+        </Button>
+      )}
+    </Box>
+  )
+}
+
 /** The band above the prompt, drawn only while a login needs the person. */
 export function Band(ui: Ui, view: View, now: number, act: Actions) {
   const { Box, Text, Button } = ui
@@ -365,6 +462,8 @@ export function Band(ui: Ui, view: View, now: number, act: Actions) {
       </Box>
     )
   }
+  const chrome = ChromeBand(ui, view, act)
+  if (chrome !== undefined) return chrome
   const spent = view.accounts.every(a => {
     const r = view.readings[a.id]
     return (windowPct(r?.fiveHour, now) ?? 0) >= LEAVE_FIVE_HOUR || (windowPct(r?.sevenDay, now) ?? 0) >= LEAVE_SEVEN_DAY
@@ -471,6 +570,11 @@ function accountRows(ui: Ui, view: View, a: Account, now: number, act: Actions) 
   const r = view.readings[a.id]
   const isActive = a.id === view.activeId
   const expiry = health?.kind === 'ok' ? health.refreshExpiresAt : undefined
+  // Its organization and plan, and whether the Chrome extension is signed in to it.
+  const about = [
+    ...(a.orgName === undefined ? [] : [a.plan ? `${a.orgName} · ${a.plan}` : a.orgName]),
+    ...(view.chromeAccountId === a.id ? ['Chrome'] : []),
+  ]
   return (
     <Box key={`account-${a.id}`} flexDirection="column" marginBottom={1}>
       <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
@@ -480,7 +584,7 @@ function accountRows(ui: Ui, view: View, a: Account, now: number, act: Actions) 
           </Box>
           <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
             <Text bold={isActive} dimColor={!isActive}>{a.email ?? (a.slot === '' ? 'your normal account' : 'not signed in yet')}</Text>
-            {a.orgName !== undefined && <Text dimColor>{a.orgName}{a.plan ? ` · ${a.plan}` : ''}</Text>}
+            {about.length > 0 && <Text dimColor>{about.join(' · ')}</Text>}
           </Box>
         </Box>
         <Box flexDirection="row" flexGrow={1} flexWrap="wrap" justifyContent="flex-end" columnGap={2}>
@@ -548,7 +652,8 @@ function LoginLine({ Text }: Ui, view: View) {
 /**
  * The pane: when the rotation moves on (or that it can't), and Claude Code's
  * own login, then every account, its usage and what can be done with it, then
- * where the rotation moves to and the footer's settings, each group in its box.
+ * where the rotation moves to, Claude in Chrome in a session that has it, and
+ * the footer's settings, each group in its box.
  */
 export function Pane(ui: Ui, view: View, now: number, act: Actions) {
   const { Box, Text, Button } = ui
@@ -566,6 +671,7 @@ export function Pane(ui: Ui, view: View, now: number, act: Actions) {
       {LoginLine(ui, view)}
       {section(ui, 'accounts', 'Accounts', accounts)}
       {RotationSettings(ui, view, act)}
+      {(view.hasChrome === true || view.chromeAccountId !== undefined) && ChromeSettings(ui, view, act)}
       {FooterSettings(ui, view, act)}
     </Box>
   )

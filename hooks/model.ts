@@ -378,6 +378,64 @@ export function blockedText(isNormalLogin: boolean): string {
   )
 }
 
+/** The MCP server Claude Code runs Claude in Chrome as, and the names of its tools. */
+export const CHROME_SERVER = 'claude-in-chrome'
+export const CHROME_TOOL = /^mcp__claude-in-chrome__/
+
+/**
+ * How many browsers `list_connected_browsers` lists: the Chrome extensions
+ * signed in to the account Claude in Chrome connected as. Undefined for an
+ * answer that is no list.
+ */
+export function browsersFrom(text: string): number | undefined {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return Array.isArray(parsed) ? parsed.length : undefined
+  } catch {
+    // Words, not a list: an error, which counts no browsers either way.
+    return undefined
+  }
+}
+
+/** Whether a browser call's error says no browser answered, as Claude Code words it over its bridge or its local socket. */
+export function isNoBrowser(text: string): boolean {
+  return /Browser extension is not connected|isn't paired with your browser|No Chrome extension connected/.test(text)
+}
+
+/**
+ * What Claude reads after a browser call that found no browser, as Claude
+ * Code's own words send the person to /login: the account Claude in Chrome
+ * connected as, the one the extension answers, and the press that fixes it.
+ */
+export function chromeNote(view: View): string {
+  const named = (id: string | undefined) => {
+    const a = view.accounts.find(x => x.id === id)
+    return a === undefined ? undefined : `account ${a.id}${a.email === undefined ? '' : ` (${a.email})`}`
+  }
+  const [as, own] = [named(view.chrome?.as), named(view.chromeAccountId)]
+  const found = as === undefined ? 'Claude in Chrome found no browser.' : `Claude in Chrome connected as Claude ${as} and found no browser.`
+  const noLogin = "/login does not fix this: in a session the account-rotator mod moved, it signs in the account the session is on, not the extension's."
+  if (own === undefined) {
+    return (
+      `${found} The Chrome extension answers only the claude.ai account it is signed in to, and the account-rotator mod moves this session between the user's Claude accounts. ${noLogin} ` +
+      "Ask the user which of their Claude accounts the extension is signed in to (its settings show the email): they pick it under Chrome in the Claude accounts panel (click the usage under the prompt) and press Reconnect Chrome. Then try again."
+    )
+  }
+  if (view.chrome?.as === view.chromeAccountId) {
+    return (
+      `Claude in Chrome connected as ${own}, the account the user's Chrome extension is signed in to, and found no browser: Chrome may be closed, or the connection dropped and came back as the account now in use. ${noLogin} ` +
+      `Ask the user to check that Chrome is open and press Reconnect Chrome above the prompt, which reconnects it as ${own} in about a minute. Then try again.`
+    )
+  }
+  if (view.isSwitchBlocked) {
+    return `${found} The user's Chrome extension is signed in to ${own}, the only account it answers, and Claude Code doesn't let the account-rotator mod move this session there, so the browser can't be used in it. ${noLogin}`
+  }
+  return (
+    `${found} The user's Chrome extension is signed in to ${own}, the only account it answers: the account-rotator mod moves this session between the user's Claude accounts, and Claude in Chrome connects as the one in use. ${noLogin} ` +
+    `Ask the user to press Reconnect Chrome above the prompt, which reconnects it as ${own} in about a minute. Then try again.`
+  )
+}
+
 /** The keychain account name Claude Code files its entries under. */
 export function keychainUser(user: string | undefined): string {
   return user !== undefined && /^[a-zA-Z0-9._-]+$/.test(user) ? user : 'claude-code-user'

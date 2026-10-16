@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type {
   EngineInterface,
   HookStream,
+  McpToolResult,
   ProcessSpawnChunk,
   ProcessSpawnResult,
   Register,
@@ -11,9 +12,13 @@ import type {
 
 import type { Account, FooterStyle, Health, Holder, Reading, RotateTo, View } from '../types'
 import {
+  CHROME_SERVER,
+  CHROME_TOOL,
   EMPTY_VIEW,
   LEAVE_FIVE_HOUR,
   blockedText,
+  browsersFrom,
+  chromeNote,
   credentialFrom,
   credentialsFile,
   fingerprint,
@@ -23,6 +28,7 @@ import {
   identityFromProfile,
   identityFromStatus,
   isLoginOf,
+  isNoBrowser,
   isOnNormalLogin,
   isPolicyRefusal,
   keychainItem,
@@ -58,6 +64,8 @@ const CONFIRM_GIVE_UP_MS = 4 * 60_000
  * slot, overwriting that login: so no switch this close to the expiry.
  */
 const REFRESH_GUARD_MS = 8 * 60_000
+/** How long the mod waits on Claude in Chrome to list its browsers, connecting first, before going on without. */
+const CHROME_WAIT_MS = 15_000
 /** A file only macOS has: there Claude Code keeps logins in the keychain, elsewhere (Linux) in a file each. */
 const MACOS_MARKER = '/System/Library/CoreServices/SystemVersion.plist'
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
@@ -83,6 +91,10 @@ let signInQueue: Promise<void> = Promise.resolve()
 let held: { target: Account; why: string; timer: Timer } | undefined
 /** Logins a switch to did not take this session: the rotation leaves them be; Use now still tries. */
 const untaken = new Set<string>()
+/** When this session last moved to another login: until SETTLE_MS after, its requests may still go out as the one before. */
+let movedAt: number | undefined
+/** Reconnect Chrome is under way: the rotation waits for it. */
+let isConnectingChrome = false
 
 // ---------------------------------------------------------------- state
 // The view is this session's; the store is one JSON file every session of the
@@ -150,6 +162,8 @@ async function mergeStore($: Host): Promise<void> {
   }
   const footer = footerStyleFrom(await $.store.get('footer'))
   const rotateTo = rotateToFrom(await $.store.get('rotate-to'))
+  const chrome = await $.store.get('chrome-account')
+  const chromeAccountId = typeof chrome === 'string' && accounts.some(a => a.id === chrome) ? chrome : undefined
   await setView($, v => {
     const nextReadings: Record<string, Reading> = {}
     const nextHealth: Record<string, Health> = {}
@@ -165,7 +179,7 @@ async function mergeStore($: Host): Promise<void> {
       const holder = holders[a.id] ?? v.holders[a.id]
       if (holder !== undefined) nextHolders[a.id] = holder
     }
-    return { ...v, accounts, readings: nextReadings, health: nextHealth, holders: nextHolders, footer, rotateTo }
+    return { ...v, accounts, readings: nextReadings, health: nextHealth, holders: nextHolders, footer, rotateTo, chromeAccountId }
   })
 }
 
@@ -180,6 +194,13 @@ async function setFooter($: Host, change: Partial<FooterStyle>): Promise<void> {
 async function setRotateTo($: Host, rotateTo: RotateTo): Promise<void> {
   await $.store.set('rotate-to', rotateTo)
   await setView($, v => ({ ...v, rotateTo }))
+}
+
+/** Names the account the Chrome extension is signed in to, for every session; none forgets it. */
+async function setChromeAccount($: Host, id: string | undefined): Promise<void> {
+  if (id === undefined) await $.store.delete('chrome-account')
+  else await $.store.set('chrome-account', id)
+  await setView($, v => ({ ...v, chromeAccountId: id }))
 }
 
 // ---------------------------------------------------------------- host
@@ -401,38 +422,44 @@ function whyLeave(view: View, now: number): string {
 
 /**
  * Once the active login is spent or locked out, moves to the one the pane's
- * Rotation setting picks; never while it is off, or Claude Code's policy refuses it.
+ * Rotation setting picks; never while it is off, Claude Code's policy refuses
+ * it, or Reconnect Chrome holds the session where it is.
  */
 async function maybeRotate($: Host): Promise<boolean> {
   const now = await $.clock.now()
   const view = await getView($)
-  if (view.rotateTo === 'off' || view.isSwitchBlocked || view.pending !== undefined || !shouldLeave(view, now)) return false
+  if (isConnectingChrome || view.rotateTo === 'off' || view.isSwitchBlocked || view.pending !== undefined || !shouldLeave(view, now)) return false
   // With none to move to, the band above the prompt says when the next login frees up.
   const target = pickTarget({ ...view, accounts: view.accounts.filter(a => !untaken.has(a.id)) }, now)
   return target === undefined ? false : switchTo($, target, whyLeave(view, now))
 }
 
+/** The login in use, when its token refreshes too soon for the refresh guard to let the session leave it for `target`. */
+async function refreshingSoon($: Host, view: View, target: Account, now: number): Promise<Account | undefined> {
+  const active = view.accounts.find(a => a.id === view.activeId)
+  if (active === undefined || active.id === target.id) return undefined
+  const stored = await readStored($, active.slot)
+  const credential = stored.state === 'present' ? stored.credential : undefined
+  const isSoon = credential !== undefined && credential.expiresAt > now && credential.expiresAt - now < REFRESH_GUARD_MS
+  return isSoon ? active : undefined
+}
+
 /** Points this session at `target`; false while the refresh guard holds it back, or Claude Code's policy refuses it. */
 async function switchTo($: Host, target: Account, why: string): Promise<boolean> {
-  const now = await $.clock.now()
-  const view = await getView($)
-  const active = view.accounts.find(a => a.id === view.activeId)
-  if (active !== undefined && active.id !== target.id) {
-    const stored = await readStored($, active.slot)
-    const credential = stored.state === 'present' ? stored.credential : undefined
-    if (credential !== undefined && credential.expiresAt > now && credential.expiresAt - now < REFRESH_GUARD_MS) {
-      if (held === undefined) {
-        tell($, `Switching to Claude account ${target.id} in a few minutes, once account ${active.id}'s token has refreshed.`)
-        const retry = () => {
-          if (held !== undefined) void switchTo($, held.target, held.why)
-        }
-        held = { target, why, timer: $.clock.every(60_000, retry) }
-      } else held = { ...held, target, why }
-      return false
-    }
+  const active = await refreshingSoon($, await getView($), target, await $.clock.now())
+  if (active !== undefined) {
+    if (held === undefined) {
+      tell($, `Switching to Claude account ${target.id} in a few minutes, once account ${active.id}'s token has refreshed.`)
+      const retry = () => {
+        if (held !== undefined) void switchTo($, held.target, held.why)
+      }
+      held = { target, why, timer: $.clock.every(60_000, retry) }
+    } else held = { ...held, target, why }
+    return false
   }
   held?.timer.cancel()
   held = undefined
+  await keepChrome($)
   try {
     await useSlot($, target.slot)
   } catch (error) {
@@ -441,6 +468,8 @@ async function switchTo($: Host, target: Account, why: string): Promise<boolean>
     if (!(await blocked($))) tell($, blockedText(isOnNormalLogin(await getView($))))
     return false
   }
+  const now = await $.clock.now()
+  movedAt = now
   await setView($, v => ({
     ...v,
     activeId: target.id,
@@ -480,6 +509,7 @@ async function settlePending($: Host, isResponse: boolean): Promise<void> {
     untaken.add(pending.id)
     try {
       await useSlot($, from.slot)
+      movedAt = now
     } catch (error) {
       await debug($, `switch back failed: ${String(error)}`)
     }
@@ -529,6 +559,140 @@ async function onStopFailure($: Host, error: string): Promise<void> {
   if (await maybeRotate($)) {
     $.clock.after(SETTLE_MS, () => void $.prompt.submit({ text: CONTINUE }))
   }
+}
+
+// ---------------------------------------------------------------- Claude in Chrome
+// The Chrome extension answers only connections made as the claude.ai account
+// it is signed in to. Claude in Chrome connects at its first call, as the login
+// the session's requests use then, and keeps that until it reconnects: so the
+// mod connects it before moving the session off the extension's account, and
+// the browser goes on answering wherever the rotation moves the session.
+
+type ChromeAnswer = 'paired' | 'unpaired' | 'failed' | 'absent'
+
+/**
+ * Asks Claude in Chrome which browsers answer, connecting it if this session
+ * has not yet: 'failed' when it could not tell (no connection, or no answer in
+ * time), 'absent' in a session without Claude in Chrome.
+ */
+async function askChrome($: Host): Promise<ChromeAnswer> {
+  let answer: McpToolResult | undefined
+  try {
+    const late = $.clock.sleep(CHROME_WAIT_MS).then(() => undefined)
+    answer = await Promise.race([$.mcp.call(CHROME_SERVER, 'list_connected_browsers', {}), late])
+  } catch (error) {
+    // No Claude in Chrome tools in this session, or a hook refused the call.
+    await debug($, `Claude in Chrome not reached: ${String(error)}`)
+    return 'absent'
+  }
+  if (answer === undefined || answer.isError) return 'failed'
+  const browsers = browsersFrom(answer.content.map(block => block.text ?? '').join(''))
+  return browsers === undefined ? 'failed' : browsers > 0 ? 'paired' : 'unpaired'
+}
+
+/** The account a browser answered as is the one the Chrome extension is signed in to, for every session: said when it is news. */
+async function learnChrome($: Host, account: Account): Promise<void> {
+  if ((await getView($)).chromeAccountId === account.id) return
+  await setChromeAccount($, account.id)
+  tell($, `Your Chrome extension is signed in to Claude account ${label(account)}: the mod keeps Claude in Chrome connected as it while the rotation moves the session.`)
+}
+
+/**
+ * What an answer tells, Claude in Chrome having connected as `as`: whether the
+ * session has it, how its connection stands, and, a browser answering, the
+ * extension's account. A guess that finds none is kept, so it is not tried again.
+ */
+async function noteChrome($: Host, as: Account, answer: ChromeAnswer): Promise<void> {
+  if (answer === 'absent' || answer === 'failed') {
+    await setView($, v => ({ ...v, hasChrome: answer === 'failed' }))
+    return
+  }
+  const isPaired = answer === 'paired'
+  await setView($, v => ({
+    ...v,
+    hasChrome: true,
+    chrome: { as: as.id, isPaired, ...(!isPaired && v.chrome?.hasFailed ? { hasFailed: true } : {}) },
+  }))
+  if (isPaired) await learnChrome($, as)
+  else if ((await getView($)).chromeAccountId === undefined) await $.store.set('chrome-miss', as.id)
+}
+
+/**
+ * Before the session moves off the login it is on: where that is the account
+ * the Chrome extension is signed in to (or, none named yet, Claude Code's
+ * login, where it most often is), connects Claude in Chrome there first, once a
+ * session. The connection keeps that account as the session moves on.
+ */
+async function keepChrome($: Host): Promise<void> {
+  const view = await getView($)
+  if (view.chrome !== undefined || view.hasChrome === false || isConnectingChrome) return
+  // Until a switch lands, the connection could be made as either login.
+  if (movedAt !== undefined && (await $.clock.now()) - movedAt < SETTLE_MS) return
+  const active = view.accounts.find(a => a.id === view.activeId)
+  if (active === undefined) return
+  const isGuess = view.chromeAccountId === undefined && active.slot === '' && (await $.store.get('chrome-miss')) !== active.id
+  if (view.chromeAccountId !== active.id && !isGuess) return
+  await noteChrome($, active, await askChrome($))
+}
+
+/**
+ * Reconnect Chrome: moves the session to the account the Chrome extension is
+ * signed in to, has Claude in Chrome connect again once the session's requests
+ * go out as that account, then lets the rotation move on; the connection stays.
+ */
+async function reconnectChrome($: Host): Promise<void> {
+  const view = await getView($)
+  const target = view.accounts.find(a => a.id === view.chromeAccountId)
+  if (target === undefined || isConnectingChrome) return
+  const active = await refreshingSoon($, view, target, await $.clock.now())
+  if (active !== undefined) {
+    tell($, `Reconnect Chrome moves this session to Claude account ${target.id}, which waits for account ${active.id}'s token to refresh: try again in a few minutes.`)
+    return
+  }
+  isConnectingChrome = true
+  await setView($, v => ({ ...v, chromeConnecting: target.id }))
+  try {
+    if (view.activeId !== target.id && !(await switchTo($, target, 'to reconnect Claude in Chrome there'))) return
+    const wait = movedAt === undefined ? 0 : movedAt + SETTLE_MS - (await $.clock.now())
+    if (wait > 0) await $.clock.sleep(wait)
+    // Its next call connects again, as the account the session's requests now use.
+    await $.command.run({ command: 'mcp', args: `reconnect ${CHROME_SERVER}` })
+    const answer = await askChrome($)
+    await noteChrome($, target, answer)
+    // A browser answering as the account shows the switch took: the rotation need not wait for a response to say so.
+    if (answer === 'paired') {
+      untaken.delete(target.id)
+      await setView($, v => (v.pending?.id === target.id ? { ...v, pending: undefined } : v))
+    }
+    tell(
+      $,
+      answer === 'paired'
+        ? `Claude in Chrome is connected as Claude account ${label(target)} again.`
+        : `Claude in Chrome found no browser as Claude account ${label(target)}: is Chrome open, with its extension signed in as that account?`,
+    )
+  } finally {
+    isConnectingChrome = false
+    await setView($, v => ({ ...v, chromeConnecting: undefined }))
+  }
+  await maybeRotate($)
+}
+
+/**
+ * After a call to one of Claude in Chrome's tools. One that found no browser
+ * marks the connection so, for the band, and returns what Claude reads in
+ * place of Claude Code's advice to /login; one answered marks it paired. The
+ * first call of a session made the connection, as the login in use: answered,
+ * it names the account the extension is signed in to.
+ */
+async function onBrowserCall($: Host, isUnanswered: boolean): Promise<string | undefined> {
+  const view = await getView($)
+  const isSure = movedAt === undefined || (await $.clock.now()) - movedAt >= SETTLE_MS
+  const as = view.chrome?.as ?? (isSure ? view.activeId : undefined)
+  const chrome = { ...(as === undefined ? {} : { as }), isPaired: !isUnanswered, ...(isUnanswered ? { hasFailed: true } : {}) }
+  await setView($, v => ({ ...v, hasChrome: true, chrome }))
+  const active = view.accounts.find(a => a.id === view.activeId)
+  if (!isUnanswered && view.chrome === undefined && isSure && active !== undefined) await learnChrome($, active)
+  return isUnanswered ? chromeNote(await getView($)) : undefined
 }
 
 // ---------------------------------------------------------------- sign-in
@@ -629,6 +793,7 @@ async function removeAccount($: Host, id: string): Promise<void> {
   }
   await $.process.run(['claude', 'auth', 'logout'], { env: slotEnv(account.slot), timeoutMs: 20_000 })
   await saveAccounts($, view.accounts.filter(a => a.id !== id))
+  if (view.chromeAccountId === id) await setChromeAccount($, undefined)
   await $.store.delete(`reading:${id}`)
   await $.store.delete(`health:${id}`)
   await $.store.delete(`holder:${id}`)
@@ -690,6 +855,8 @@ function actions($: Host): Actions {
     remove: id => background(removeAccount($, id)),
     setFooter: change => background(setFooter($, change)),
     setRotateTo: rotateTo => background(setRotateTo($, rotateTo)),
+    setChromeAccount: id => background(setChromeAccount($, id)),
+    reconnectChrome: () => background(reconnectChrome($)),
     setDemo: on => background(setView($, v => ({ ...v, demo: on }))),
   }
 }
@@ -762,6 +929,17 @@ export const register: Register = on => {
     const ran = await next(e)
     void checkActive($).catch(error => debug($, `check after /login failed: ${String(error)}`))
     return ran
+  }).catch(($, e, next) => next(e))
+
+  // Claude Code's words for a browser call that found no browser send the person to /login, which here signs in the wrong account.
+  on('tool.call', { tool: CHROME_TOOL }, async ($, e, next) => {
+    const done = await next(e)
+    if (done.deny !== undefined) return done
+    const note = await onBrowserCall($, done.isError === true && isNoBrowser(done.text ?? '')).catch(async error => {
+      await debug($, `browser call handling failed: ${String(error)}`)
+      return undefined
+    })
+    return note === undefined ? done : { ...done, context: [...(done.context ?? []), note] }
   }).catch(($, e, next) => next(e))
 
   on('ui.close', async ($, e, next) => {

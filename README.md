@@ -29,6 +29,7 @@ Click it for the panel: each account's usage and reset times, **Sign in**, **Use
 - **Shows what is really in use.** If a switch doesn't take, the footer and panel go back to the old account, and the rotation stops trying the other one for that session.
 - **Follows `/login`.** `/login` signs in the account the session is on, which after a switch isn't Claude Code's login. The mod checks who each account's sign-in belongs to: one that now holds another account's asks for its own again, and the session moves off it; one signed in as an account not on the list becomes that account.
 - **Names Claude Code's login.** The panel's second line says which account new sessions start on, and whether it is personal or a Team or Enterprise seat, whose sessions can't switch.
+- **Keeps Claude in Chrome working.** Your Chrome extension answers only the account it is signed in to. Before the rotation moves a session off that account, the mod connects Claude in Chrome there, and the connection stays as the session moves on. When a browser call still finds no browser, Claude is told why, and not to `/login`, and the line above the prompt offers **Reconnect Chrome**. See [Claude in Chrome](#claude-in-chrome).
 - **Warns.** When every account is near its limit, a line above the prompt says when the next one frees up. When an account needs signing in again, the same line says so and signs it in with one click.
 
 ## Requirements
@@ -78,10 +79,20 @@ It applies to sessions started after. Delete the file to turn the default back o
 
 Untested: this follows how Claude Code 2.1.299 describes and reads the setting, but it has not been tried end to end, and a release can change it. You use it at your own risk.
 
+## Claude in Chrome
+
+The Claude extension in Chrome is signed in to one claude.ai account and answers only Claude Code connections made as that account. Claude Code connects Claude in Chrome at a session's first browser call, as the account the session is on then, and keeps that connection until it drops. With the rotation moving sessions between accounts, that is often not the extension's: Claude Code then says the extension is signed in to a different account and suggests `/login`, which doesn't fix it, and in a session the mod moved signs in the wrong account.
+
+- **Connects before moving.** Before the rotation moves a session off the extension's account, the mod connects Claude in Chrome there, by asking it which browsers answer, as a first browser call would. New sessions start on Claude Code's login, so the simplest setup is the extension signed in to the account you `/login` with.
+- **Names the extension's account.** Pick it in the panel's **Chrome** box; its line in the panel then says **Chrome**. The mod also learns it the first time a browser answers on Claude Code's login.
+- **Reconnects.** After sleep or a network change, the connection comes back as the account in use, and the next browser call finds no browser. Claude is told why and not to `/login`, and **Reconnect Chrome**, above the prompt or in the panel, moves the session to the extension's account for about 35 seconds, runs `/mcp reconnect claude-in-chrome`, connects there, and lets the rotation move on.
+
+A session that can't switch accounts connects Claude in Chrome as the account it is on.
+
 ## How it works
 
 - Each account you add gets a folder, `~/.claude/accounts/<n>`, and Claude Code keeps its sign-in in the keychain under that folder's name (on Linux, in that folder's `.credentials.json`), as for any config folder. A switch points the session at another account's sign-in.
-- Its only network traffic: each account's usage every 10 minutes, from the endpoint `/usage` reads, and once per sign-in who it belongs to, from the one Claude Code asks at a sign-in, each with that account's own token. Tokens stay where Claude Code keeps them; the mod stores each account's email, organization, plan and last usage, and a digest of its token, to tell a new sign-in.
+- Its only network traffic: each account's usage every 10 minutes, from the endpoint `/usage` reads, and once per sign-in who it belongs to, from the one Claude Code asks at a sign-in, each with that account's own token. In a session with Claude in Chrome it also asks Claude Code's own Claude in Chrome which browsers answer, before moving off the extension's account and on **Reconnect Chrome**. Tokens stay where Claude Code keeps them; the mod stores each account's email, organization, plan and last usage, a digest of its token, to tell a new sign-in, and which account your Chrome extension is signed in to.
 
 ## Uninstall
 

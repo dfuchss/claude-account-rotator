@@ -59,6 +59,13 @@ export type FooterStyle = {
   fill: Fill
 }
 
+/**
+ * Claude in Chrome in one session: the account its connection was made as,
+ * where known, and whether a browser answered there; `hasFailed` once a
+ * browser call found none, until one is answered again.
+ */
+export type ChromeLink = { as?: string; isPaired: boolean; hasFailed?: boolean }
+
 /** A run of the footer's text: its color, and the lighter one it takes while the pointer is over the footer. */
 export type FooterRun = { text: string; color?: string; lit?: string; backgroundColor?: string; dimColor?: boolean }
 
@@ -80,6 +87,17 @@ export type View = {
   rotateTo: RotateTo
   /** This session only: Claude Code's security default refuses switching, as on a Team or Enterprise account. */
   isSwitchBlocked?: boolean
+  /**
+   * The account the Chrome extension is signed in to, the only one it answers:
+   * picked in the pane, or learned when Claude in Chrome paired; kept across sessions.
+   */
+  chromeAccountId?: string
+  /** This session only: whether it has Claude in Chrome, once a call to it told. */
+  hasChrome?: boolean
+  /** This session only: Claude in Chrome's connection, once made. */
+  chrome?: ChromeLink
+  /** This session only: Reconnect Chrome is under way, to this account. */
+  chromeConnecting?: string
   /** This session only: the footer draws imitated usage, to judge its look. */
   demo?: boolean
   /** This session's terminal draws block characters from its font, short of the line, as Terminal.app does. */

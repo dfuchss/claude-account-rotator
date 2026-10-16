@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import type { RotateTo, View } from '../types'
-import { DEFAULT_FOOTER, availableNow, braille, credentialFrom, credentialsFile, footerStyleFrom, healthOf, identityFromProfile, isPolicyRefusal, keychainItem, pickTarget, pie, readingFromUsage, rotateToFrom, shouldLeave, roomColor, windowPct } from './model'
+import { DEFAULT_FOOTER, availableNow, braille, browsersFrom, chromeNote, credentialFrom, credentialsFile, footerStyleFrom, healthOf, identityFromProfile, isNoBrowser, isPolicyRefusal, keychainItem, pickTarget, pie, readingFromUsage, rotateToFrom, shouldLeave, roomColor, windowPct } from './model'
 
 const NOW = Date.parse('2026-10-12T10:00:00Z')
 const LATER = '2026-10-12T12:00:00Z'
@@ -181,4 +181,28 @@ test('a switch Claude Code\'s security policy refuses is told from any other fai
   expect(isPolicyRefusal(refused)).toBe(true)
   expect(isPolicyRefusal(new Error('HooksError: account-rotator: $.env.set: timed out'))).toBe(false)
   expect(isPolicyRefusal(undefined)).toBe(false)
+})
+
+test('counts the browsers Claude in Chrome lists, and knows its words for none answering', () => {
+  expect(browsersFrom('[{"deviceId":"d","name":"Browser 1","osPlatform":"macOS","isLocal":true}]')).toBe(1)
+  expect(browsersFrom('[]')).toBe(0)
+  expect(browsersFrom('Browser extension is not connected.')).toBeUndefined()
+  expect(isNoBrowser('Browser extension is not connected. Please ensure the Claude browser extension is installed and running')).toBe(true)
+  expect(isNoBrowser("[Claude in Chrome] Claude in Chrome isn't paired with your browser (reported by the extension, unverified: account_mismatch)")).toBe(true)
+  expect(isNoBrowser('Tab 12 no longer exists')).toBe(false)
+})
+
+test('the note for a browser call that found no browser fits what is known: the extension\'s own account connected, none known, or a session that cannot switch', () => {
+  const accounts = [
+    { id: '1', slot: '', email: 'one@example.com' },
+    { id: '2', slot: '/h/.claude/accounts/2', email: 'two@example.com' },
+  ]
+  const base = { ...view({ '1': [10, 10], '2': [10, 10] }), accounts, chromeAccountId: '1', activeId: '2' }
+  expect(chromeNote({ ...base, chrome: { as: '1', isPaired: false, hasFailed: true } })).toMatch(
+    /^Claude in Chrome connected as account 1 \(one@example\.com\), the account the user's Chrome extension is signed in to, and found no browser: Chrome may be closed/,
+  )
+  expect(chromeNote({ ...base, chrome: { isPaired: false } })).toMatch(/^Claude in Chrome found no browser\. The user's Chrome extension is signed in to account 1 \(one@example\.com\)/)
+  const blocked = chromeNote({ ...base, chrome: { as: '2', isPaired: false }, isSwitchBlocked: true })
+  expect(blocked).toMatch(/doesn't let the account-rotator mod move this session there, so the browser can't be used in it\. \/login does not fix this/)
+  expect(blocked).not.toMatch(/Reconnect Chrome/)
 })
