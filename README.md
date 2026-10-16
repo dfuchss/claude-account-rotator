@@ -14,6 +14,8 @@ A [Claude Code](https://code.claude.com) mod for people with more than one Claud
 
 Then click the usage in the footer, press **+ Add an account** and approve the sign-in in your browser. The account you are signed in with now is account 1.
 
+To update, run `claude plugin update account-rotator@claude-account-rotator` and start a new session, or turn on auto-update for this marketplace in `/plugin`. The [changelog](CHANGELOG.md) says what each version changed.
+
 ## The footer
 
 A column per account. The top row is the room it has right now (its 5-hour window, or none once its week is spent), the bottom row its week: green with plenty left, red with little. The percents are the account in use's.
