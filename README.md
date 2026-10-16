@@ -37,7 +37,7 @@ Click it for the panel: each account's usage and reset times, **Sign in**, **Use
 - macOS, where Claude Code keeps sign-ins in the keychain, or Linux, where it keeps them in files.
 - Claude Code 2.1.296 or later, in its fullscreen renderer (`/tui fullscreen`), the only one that passes clicks on: the panel opens with a click.
 - Any Mac terminal: Terminal.app, iTerm2, Ghostty, Warp, VS Code; on Linux, one with mouse reporting. In iTerm2 the profile's *Enable mouse reporting* must be on, in tmux `set -g mouse on`, and iTerm2's `tmux -CC` mode can't run fullscreen.
-- Claude subscription accounts (tested with Max and Team seats). Your `/login` must be a personal one, Pro or Max: see [Team and Enterprise accounts](#team-and-enterprise-accounts).
+- Claude subscription accounts (tested with Max and Team seats). For sessions that switch, keep your `/login` a personal account, Pro or Max: see [Team and Enterprise accounts](#team-and-enterprise-accounts).
 
 Claude Code's own "You've used N% of your session limit" warning can still show for a minute after a switch: the switch lands within about 35 seconds, and warnings Claude Code queued before it still play. No mod can hide it.
 
@@ -50,15 +50,37 @@ The mod moves between personal accounts and Team or Enterprise seats. But Claude
 - **the session started on a Team or Enterprise account**, or
 - **plugins reloaded while one was in use**: `/reload-plugins`, or installing, enabling or disabling a plugin (since 2.1.299).
 
-The mod tells you when this happens. To keep switching:
+The block comes from a built-in security default that stops plugins you install from changing where Claude Code reads its sign-in. It also runs on any machine with managed settings. The mod tells you when a session is blocked, and marks it in the footer.
 
-- **`/login` with your personal account (Pro or Max)** in a new session. New sessions start on Claude Code's login, which the panel's second line names; `/login` changes it only in a session on it, and in a session the mod moved, signs in that account instead. It doesn't unblock the session it runs in: restart Claude after.
+Ways around it, best first:
+
+| Way | Rotates | For |
+| --- | --- | --- |
+| 1. [Start on a personal account](#1-start-on-a-personal-account) | Yes | Anyone with a personal account, Pro or Max |
+| 2. [Start on a chosen account](#2-start-on-a-chosen-account) | No: restart Claude to change accounts | When all your accounts are seats |
+| 3. [Turn the security default off](#3-turn-the-security-default-off) | Yes, untested | A machine you alone control: read its warning first |
+
+### 1. Start on a personal account
+
+The fix. A session that starts on a personal account can switch, to seats as well. New sessions start on Claude Code's login, which the panel's second line names:
+
+- **`/login` with your personal account (Pro or Max)** in a new session. `/login` changes Claude Code's login only in a session on it; in a session the mod moved, it signs in that account instead. It doesn't unblock the session it runs in: restart Claude after.
 - **Add Team seats from the panel**, not `/login`: **+ Add an account**, and **Sign in** to renew.
-- **Restart Claude when blocked:** quit, and run `claude --continue` or `claude --resume` to keep your conversation (or plain `claude`). Each starts on your `/login`. Not `/restart`: it stays on the account in use.
+- **Restart Claude when blocked anyway**, as after a plugin reload on a seat: quit, and run `claude --continue` or `claude --resume` to keep your conversation (or plain `claude`). Each starts on your `/login`. Not `/restart`: it stays on the account in use.
 
-The block comes from a built-in security default that stops plugins you install from changing where Claude Code reads its sign-in. It also runs on any machine with managed settings.
+### 2. Start on a chosen account
 
-### Turning the security default off
+Not a fix: a session started on a seat this way still can't switch. It only picks the account: with only seats, start on the one the footer shows with room, and restart Claude on another when it runs low.
+
+```sh
+CLAUDE_SECURESTORAGE_CONFIG_DIR="$HOME/.claude/accounts/2" claude --continue
+```
+
+`2` is the account's number in the footer and the panel; plain `claude` starts on account 1, Claude Code's login. Type the path as here, with no `/` at the end and no `~` in quotes: Claude Code and the mod know the account by its exact text, so any other spelling can start signed out, and shows in the panel as a new account. Set it on the command, not with `export`, or every later `claude` in that shell starts there too. Numbers are reused after **Remove**: check the panel before putting one in an alias.
+
+Started this way on a personal account, a session rotates as in 1, with your `/login` left a seat.
+
+### 3. Turn the security default off
 
 > [!WARNING]
 > This removes a security protection for every plugin and every session on the machine. With it off, a plugin you install can override what an organization's policy sets for Claude Code (its hooks, prompt content, settings, tool and MCP server rules) and change where Claude Code reads sign-ins and settings from. Anthropic's [Usage Policy](https://www.anthropic.com/legal/aup) forbids intentionally bypassing restrictions or guardrails built into its products. This is a setting Claude Code offers administrators, but using it so a Team session can switch accounts may count as bypassing. Do it only on a machine you alone control, with plugins you trust. Never do it where an organization manages Claude Code, or where your Team or Enterprise organization's rules forbid it.
@@ -77,7 +99,7 @@ echo '{ "prependPlugins": [] }' | sudo tee /etc/claude-code/managed-settings.jso
 
 It applies to sessions started after. Delete the file to turn the default back on. Managed settings an organization sends from Anthropic's servers can override it.
 
-Untested: this follows how Claude Code 2.1.299 describes and reads the setting, but it has not been tried end to end, and a release can change it. You use it at your own risk.
+Untested: this follows how Claude Code 2.1.301 describes and reads the setting, but it has not been tried end to end, and a release can change it. You use it at your own risk.
 
 ## Claude in Chrome
 
@@ -105,7 +127,7 @@ As of October 2026:
 - Neither Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms) (October 8, 2025) nor its [Commercial Terms](https://www.anthropic.com/legal/commercial-terms) (June 17, 2025) forbid one person from holding more than one Claude account. The Consumer Terms forbid sharing an account's login details, so add only your own. A Team or Enterprise seat is also under its organization's rules.
 - Claude Code's [legal page](https://code.claude.com/docs/en/legal-and-compliance) says the advertised usage limits of Pro and Max assume ordinary, individual usage. It also says Anthropic may enforce its rules on sign-ins and credentials without notice. The mod signs accounts in only through Claude Code's own `claude auth login` and keeps no tokens of its own.
 - The Consumer Terms forbid reaching the Services "through automated or non-human means" except with an API key. The mod's usage check every 10 minutes and its "carry on" prompt after a switch run inside Claude Code, as part of your own session, but judge that for yourself.
-- The [Usage Policy](https://www.anthropic.com/legal/aup) forbids intentionally bypassing restrictions or guardrails built into Anthropic's products: read the warning in [Turning the security default off](#turning-the-security-default-off) first.
+- The [Usage Policy](https://www.anthropic.com/legal/aup) forbids intentionally bypassing restrictions or guardrails built into Anthropic's products: read the warning in [Turn the security default off](#3-turn-the-security-default-off) first.
 
 Terms change; this is not legal advice. Not affiliated with or endorsed by Anthropic.
 
