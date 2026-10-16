@@ -2,6 +2,11 @@
 
 What each version of the account rotator changed. To update, run `claude plugin update account-rotator@claude-account-rotator` and start a new session.
 
+## 0.2.1 - 2026-10-16
+
+- **The Chrome box lists every account until an extension answers,** so you pick the extension's straight away: **Look for Chrome on another account** is gone. Once a browser has answered as an account, the box lists those, and the one picked for it.
+- **A window that can't switch accounts says so in the Chrome box,** with the command that brings the conversation back in a session that can: `claude --resume <id>`.
+
 ## 0.2.0 - 2026-10-16
 
 Every copy installed before this one said 0.1.0, whatever it held, so `claude plugin update` never offered an update. Updating once brings everything below.
