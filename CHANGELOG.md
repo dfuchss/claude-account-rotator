@@ -1,6 +1,6 @@
 # Changelog
 
-What each version of the account rotator changed. To update, run `claude plugin update account-rotator@claude-account-rotator` and start a new session.
+What each version of the account rotator changed. To update, run `claude plugin marketplace update claude-account-rotator`, then `claude plugin update account-rotator@claude-account-rotator`, and start a new session.
 
 ## 0.2.1 - 2026-10-16
 

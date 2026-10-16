@@ -63,12 +63,13 @@ CLAUDE_CONFIG_DIR="$T" claude plugin marketplace add ivokund/claude-account-rota
 M="$T/plugins/marketplaces/claude-account-rotator"
 git -C "$M" fetch -q --unshallow --tags; git -C "$M" reset -q --hard <previous tag>
 CLAUDE_CONFIG_DIR="$T" claude plugin install account-rotator@claude-account-rotator
+CLAUDE_CONFIG_DIR="$T" claude plugin marketplace update claude-account-rotator
 CLAUDE_CONFIG_DIR="$T" claude plugin update account-rotator@claude-account-rotator
 ```
 
-Expect an update to the new version, and its code under `$T/plugins/cache/claude-account-rotator/account-rotator/<version>/`. `claude plugin update` pulls the marketplace itself. "Already at the latest version" means the bump didn't reach GitHub: check `plugin.json` on `origin/main`.
+Expect an update to the new version, and its code under `$T/plugins/cache/claude-account-rotator/account-rotator/<version>/`. Pull the marketplace first: `claude plugin update` pulls it only sometimes (not when it was added or pulled moments before). "Already at the latest version" after the pull means the bump didn't reach GitHub: check `plugin.json` on `origin/main`.
 
 ## 7. Say where it is
 
-- Users update with `claude plugin update account-rotator@claude-account-rotator`, then start a new session.
+- Users update with `claude plugin marketplace update claude-account-rotator`, then `claude plugin update account-rotator@claude-account-rotator`, then start a new session. Say both, in release notes too.
 - In an issue the release fixes, link the GitHub release and say which version has the fix.

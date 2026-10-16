@@ -14,7 +14,14 @@ A [Claude Code](https://code.claude.com) mod for people with more than one Claud
 
 Then click the usage in the footer, press **+ Add an account** and approve the sign-in in your browser. The account you are signed in with now is account 1.
 
-To update, run `claude plugin update account-rotator@claude-account-rotator` and start a new session, or turn on auto-update for this marketplace in `/plugin`. The [changelog](CHANGELOG.md) says what each version changed.
+To update, pull the marketplace, then the mod, and start a new session:
+
+```
+claude plugin marketplace update claude-account-rotator
+claude plugin update account-rotator@claude-account-rotator
+```
+
+Or turn on auto-update for the marketplace in `/plugin`. The [changelog](CHANGELOG.md) says what each version changed.
 
 ## The footer
 
@@ -37,7 +44,7 @@ Click it for the panel: each account's usage and reset times, **Sign in**, **Use
 ## Requirements
 
 - macOS, where Claude Code keeps sign-ins in the keychain, or Linux, where it keeps them in files.
-- Claude Code 2.1.296 or later, in its fullscreen renderer (`/tui fullscreen`), the only one that passes clicks on: the panel opens with a click.
+- Claude Code 2.1.299 or later, in its fullscreen renderer (`/tui fullscreen`), the only one that passes clicks on: the panel opens with a click.
 - Any Mac terminal: Terminal.app, iTerm2, Ghostty, Warp, VS Code; on Linux, one with mouse reporting. In iTerm2 the profile's *Enable mouse reporting* must be on, in tmux `set -g mouse on`, and iTerm2's `tmux -CC` mode can't run fullscreen.
 - Claude subscription accounts (tested with Max and Team seats). For sessions that switch, keep your `/login` a personal account, Pro or Max: see [Team and Enterprise accounts](#team-and-enterprise-accounts).
 
@@ -121,7 +128,7 @@ A window Claude Code stops from switching can connect only as the account it is 
 
 ## Uninstall
 
-Remove each account in the panel, which signs it out, then run `claude plugin uninstall account-rotator@claude-account-rotator` and delete `~/.claude/accounts`.
+Remove each account in the panel, which signs it out. Then run `claude plugin marketplace remove claude-account-rotator`, which uninstalls the mod and deletes what it stored, and delete `~/.claude/accounts`.
 
 ## Terms
 
@@ -141,6 +148,8 @@ claude --plugin-dir .     # a session with the mod loaded from this folder
 claude plugin validate .
 claude plugin test .
 ```
+
+`--plugin-dir` loads this folder over the installed release for that session only, with a list of accounts of its own, so a broken working tree breaks only that window. Keep the marketplace installed from GitHub: added from this folder instead, every window loads the folder as it stands. `/release` publishes a version, by the steps in `.claude/skills/release`.
 
 `demo/record.mjs` records the GIF and `demo/looks.mjs` draws the footer's looks, both from a real session fed imitated accounts; their headers say what they need.
 
