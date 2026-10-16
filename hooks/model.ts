@@ -403,37 +403,66 @@ export function isNoBrowser(text: string): boolean {
 }
 
 /**
- * What Claude reads after a browser call that found no browser, as Claude
- * Code's own words send the person to /login: the account Claude in Chrome
- * connected as, the one the extension answers, and the press that fixes it.
+ * Whether Connect can run in a session: an account is named for the Chrome
+ * extension, and the session is on it or free to move there.
  */
-export function chromeNote(view: View): string {
+export function canConnectChrome(view: View): boolean {
+  const own = view.chromeAccountId
+  return own !== undefined && view.hasChrome !== false && (!view.isSwitchBlocked || view.activeId === own)
+}
+
+/** What brings this conversation back in a new session, which starts on Claude Code's login, free to switch. */
+export function resumeCommand(view: View): string {
+  return view.sessionId === undefined ? 'claude --continue' : `claude --resume ${view.sessionId}`
+}
+
+/**
+ * Why Claude is told about Claude in Chrome: a call held back while Connect is
+ * under way, or one that found no browser, and then the mod connects it now,
+ * or no browser answered there before, or the session can't move to the
+ * extension's account, or no account is named for the extension.
+ */
+export type ChromeNoteKind = 'held' | 'connecting' | 'no-browser' | 'blocked' | 'unset'
+
+/**
+ * What Claude reads about Claude in Chrome, in place of Claude Code's advice
+ * to /login, which in a session the mod moved signs in the account the
+ * session is on: what happens now, and what to tell the user.
+ */
+export function chromeNote(view: View, kind: ChromeNoteKind): string {
   const named = (id: string | undefined) => {
     const a = view.accounts.find(x => x.id === id)
-    return a === undefined ? undefined : `account ${a.id}${a.email === undefined ? '' : ` (${a.email})`}`
+    return a === undefined ? undefined : `Claude account ${a.id}${a.email === undefined ? '' : ` (${a.email})`}`
   }
-  const [as, own] = [named(view.chrome?.as), named(view.chromeAccountId)]
-  const found = as === undefined ? 'Claude in Chrome found no browser.' : `Claude in Chrome connected as Claude ${as} and found no browser.`
-  const noLogin = "/login does not fix this: in a session the account-rotator mod moved, it signs in the account the session is on, not the extension's."
-  if (own === undefined) {
-    return (
-      `${found} The Chrome extension answers only the claude.ai account it is signed in to, and the account-rotator mod moves this session between the user's Claude accounts. ${noLogin} ` +
-      "Ask the user which of their Claude accounts the extension is signed in to (its settings show the email): they pick it under Chrome in the Claude accounts panel (click the usage under the prompt) and press Reconnect Chrome. Then try again."
-    )
+  const own = `${named(view.chromeAccountId) ?? 'one account'}, the account the user's Chrome extension is signed in to`
+  const as = named(view.chrome?.as)
+  const found = as === undefined ? 'Claude in Chrome found no browser.' : `Claude in Chrome connected as ${as} and found no browser.`
+  const wait = "End your turn now: you'll get a message once it's connected."
+  const noLogin = "Don't suggest /login: it doesn't fix this."
+  switch (kind) {
+    case 'held':
+      return `The account-rotator mod is connecting Claude in Chrome as ${own}, which takes under a minute; browser calls wait until then. ${wait}`
+    case 'connecting':
+      return `${found} The account-rotator mod is now ${view.chrome?.as === view.chromeAccountId ? 'reconnecting' : 'connecting'} it as ${own}, which takes under a minute. ${wait} ${noLogin}`
+    case 'no-browser':
+      return (
+        `No Chrome extension answers as ${named(view.chromeAccountId) ?? 'that account'}, the account picked for it in the Claude accounts panel: Chrome may be closed, its Claude extension signed in with another email, or its connection stuck. ` +
+        'Ask the user to open Chrome and check the email its Claude extension is signed in with. If it is another account, they press Use this account next to it under Chrome in the Claude accounts panel (click the usage under the prompt). ' +
+        (canConnectChrome(view)
+          ? `If it matches, they restart Chrome and press Connect above the prompt. You'll get a message once it's connected. ${noLogin}`
+          : `If it matches, they restart Chrome, then you try again. ${noLogin}`)
+      )
+    case 'blocked':
+      return (
+        `${found} This session can't connect it as ${own}: Claude Code doesn't let this session switch accounts. ` +
+        `Tell the user that to use Chrome, they quit Claude Code and run \`${resumeCommand(view)}\` in this terminal, which brings this conversation back with Chrome connected. ${noLogin}`
+      )
+    case 'unset':
+      return (
+        `${found} The user's Chrome extension answers only the Claude account it is signed in to, and the account-rotator mod doesn't know which one that is. ` +
+        `Ask the user to press Use this account next to it under Chrome in the Claude accounts panel (click the usage under the prompt; under Look for Chrome on another account if it isn't listed). You'll get a message once it's connected. ${noLogin}`
+      )
   }
-  if (view.chrome?.as === view.chromeAccountId) {
-    return (
-      `Claude in Chrome connected as ${own}, the account the user's Chrome extension is signed in to, and found no browser: Chrome may be closed, or the connection dropped and came back as the account now in use. ${noLogin} ` +
-      `Ask the user to check that Chrome is open and press Reconnect Chrome above the prompt, which reconnects it as ${own} in about a minute. Then try again.`
-    )
-  }
-  if (view.isSwitchBlocked) {
-    return `${found} The user's Chrome extension is signed in to ${own}, the only account it answers, and Claude Code doesn't let the account-rotator mod move this session there, so the browser can't be used in it. ${noLogin}`
-  }
-  return (
-    `${found} The user's Chrome extension is signed in to ${own}, the only account it answers: the account-rotator mod moves this session between the user's Claude accounts, and Claude in Chrome connects as the one in use. ${noLogin} ` +
-    `Ask the user to press Reconnect Chrome above the prompt, which reconnects it as ${own} in about a minute. Then try again.`
-  )
 }
 
 /** The keychain account name Claude Code files its entries under. */

@@ -8,12 +8,14 @@ import {
   SIGN_IN_WARN_MS,
   availableNow,
   blockedAdvice,
+  canConnectChrome,
   glyph,
   isOnNormalLogin,
   isSeatPlan,
   longBar,
   nextReset,
   planText,
+  resumeCommand,
   roomColor,
   roomLeft,
   shown,
@@ -35,8 +37,9 @@ export type Actions = {
   remove: (id: string) => void
   setFooter: (change: Partial<FooterStyle>) => void
   setRotateTo: (rotateTo: RotateTo) => void
-  setChromeAccount: (id: string) => void
-  reconnectChrome: () => void
+  useChromeAccount: (id: string) => void
+  findChrome: () => void
+  connectChrome: () => void
   setDemo: (on: boolean) => void
 }
 
@@ -332,7 +335,7 @@ function FooterSettings(ui: Ui, view: View, act: Actions) {
 
 /** Which login the rotation moves to. */
 function RotationSettings(ui: Ui, view: View, act: Actions) {
-  return section(ui, 'rotation', 'Rotation', [
+  return section(ui, 'rotation', 'Usage based rotation', [
     choice(ui, 'rotate-to', 'Move to', ROTATE_CHOICES, view.rotateTo, act.setRotateTo),
   ])
 }
@@ -340,92 +343,107 @@ function RotationSettings(ui: Ui, view: View, act: Actions) {
 /** An account as the band names it: its number, and its email once known. */
 function named(view: View, id: string): string {
   const email = view.accounts.find(a => a.id === id)?.email
-  return email === undefined ? id : `${id} (${email})`
-}
-
-/** How Claude in Chrome stands, as the pane says it: the account it connected as, and whether a browser answered there. */
-function chromeState(view: View): { text: string; isWarning: boolean } {
-  const own = view.chromeAccountId
-  const link = view.chrome
-  if (view.chromeConnecting !== undefined) return { text: `◌ Reconnecting as account ${view.chromeConnecting}…`, isWarning: true }
-  if (own === undefined) {
-    return { text: "Pick the account your Chrome extension is signed in to: it answers only that one. The extension's settings show its email.", isWarning: false }
-  }
-  if (view.hasChrome === false) return { text: 'This session runs without Claude in Chrome.', isWarning: false }
-  if (link === undefined) {
-    return view.activeId === own
-      ? { text: `Connects as account ${own}, the one in use, at the first browser call, or before the rotation moves the session off it.`, isWarning: false }
-      : { text: `Not connected yet. It would connect as account ${view.activeId}, the one in use: Reconnect Chrome connects it as account ${own}.`, isWarning: false }
-  }
-  if (link.isPaired) {
-    return link.as === undefined || link.as === own
-      ? { text: `Connected as account ${own}: it stays so as the rotation moves the session.`, isWarning: false }
-      : { text: `Connected as account ${link.as}, where a browser answers.`, isWarning: false }
-  }
-  if (link.as === own) return { text: `Connected as account ${own} and found no browser: is Chrome open?`, isWarning: true }
-  const as = link.as === undefined ? 'Found no browser' : `Connected as account ${link.as} and found no browser`
-  return { text: `${as}: your extension answers only account ${own}.`, isWarning: true }
+  return email === undefined ? `account ${id}` : `account ${id} (${email})`
 }
 
 /**
- * Claude in Chrome: the account the Chrome extension is signed in to, picked
- * here for every session, how the connection stands, and a press that
- * reconnects it as that account.
+ * What keeps Claude in Chrome from working in this window, in a sentence: no
+ * browser answering where it connected, or no move to the extension's account.
+ */
+function chromeProblem(view: View): string | undefined {
+  const own = view.chromeAccountId
+  const link = view.chrome
+  if (own === undefined || view.chromeConnecting !== undefined || link?.isPaired) return undefined
+  if (link?.as === own) {
+    return `No Chrome extension answers as ${named(view, own)}. Open Chrome and check its Claude extension is signed in with that email; if it is, restart Chrome.`
+  }
+  if (!canConnectChrome(view)) return `This window can't switch to ${named(view, own)}. Quit, then run: ${resumeCommand(view)}`
+  return undefined
+}
+
+/** One account in the Chrome box: who it is, then in use, connecting, or a press to use it. */
+function chromeRow(ui: Ui, view: View, a: Account, act: Actions) {
+  const { Box, Text, Button } = ui
+  const link = view.chrome
+  const isConnecting = view.chromeConnecting === a.id
+  const isInUse = !isConnecting && link?.isPaired === true && (link.as ?? view.chromeAccountId) === a.id
+  const canUse = view.chromeConnecting === undefined && (!view.isSwitchBlocked || view.activeId === a.id)
+  const end = isConnecting ? (
+    <Text color="warning">◌ Connecting Chrome…</Text>
+  ) : isInUse ? (
+    <Text color={ACCENT}>● in use</Text>
+  ) : (
+    canUse && <Button key={`chrome-use-${a.id}`} onPress={() => act.useChromeAccount(a.id)}>Use this account</Button>
+  )
+  return (
+    <Box key={`chrome-row-${a.id}`} flexDirection="row" flexWrap="wrap" columnGap={2}>
+      <Box flexDirection="row" flexShrink={1}>
+        <Box width={3} flexShrink={0}>
+          <Text bold={isInUse} dimColor={!isInUse}>{a.id}</Text>
+        </Box>
+        <Text bold={isInUse} dimColor={!isInUse}>{a.email ?? `account ${a.id}`}</Text>
+      </Box>
+      <Box flexDirection="row" flexGrow={1} justifyContent="flex-end">
+        {end}
+      </Box>
+    </Box>
+  )
+}
+
+/**
+ * Claude in Chrome: the accounts a Chrome extension has answered as, the one
+ * this window's Chrome is connected as in use, as in Accounts, the others a
+ * press away; what keeps it from working, under them; and the accounts none
+ * has answered as yet, on request.
  */
 function ChromeSettings(ui: Ui, view: View, act: Actions) {
   const { Box, Text, Button } = ui
-  const { text, isWarning } = chromeState(view)
-  const own = view.chromeAccountId
-  const canReconnect =
-    own !== undefined && view.chromeConnecting === undefined && view.hasChrome !== false && (!view.isSwitchBlocked || view.activeId === own)
+  if (view.hasChrome === false) return section(ui, 'chrome', 'Chrome', [<Text key="chrome-none" dimColor>Not available in this window.</Text>])
+  const seen = view.accounts.filter(a => view.chromeAccountIds?.includes(a.id))
+  const others = view.accounts.filter(a => !view.chromeAccountIds?.includes(a.id))
+  const problem = chromeProblem(view)
   return section(ui, 'chrome', 'Chrome', [
-    choice(ui, 'chrome-account', 'Account', view.accounts.map(a => [a.id, a.id] as const), view.chromeAccountId ?? '', act.setChromeAccount),
-    <Text key="chrome-state" color={isWarning ? 'warning' : undefined} dimColor={!isWarning}>
-      {text}
-    </Text>,
-    ...(canReconnect
-      ? [
-          <Box key="chrome-press">
-            <Button key="chrome-reconnect" onPress={act.reconnectChrome}>Reconnect Chrome</Button>
+    <Text key="chrome-intro" dimColor>Active Claude extension accounts from your Chrome windows:</Text>,
+    ...(seen.length === 0 ? [<Text key="chrome-empty" dimColor>None yet.</Text>] : seen.map(a => chromeRow(ui, view, a, act))),
+    ...(problem === undefined ? [] : [<Text key="chrome-problem" color="warning">{`⚠ ${problem}`}</Text>]),
+    ...(others.length === 0
+      ? []
+      : [
+          <Box key="chrome-find-row">
+            <Button key="chrome-find" plain onPress={act.findChrome}>
+              <Text dimColor>{`${view.isFindingChrome ? '▾' : '▸'} Look for Chrome on another account`}</Text>
+            </Button>
           </Box>,
-        ]
-      : []),
+          ...(view.isFindingChrome ? others.map(a => chromeRow(ui, view, a, act)) : []),
+        ]),
   ])
 }
 
 /**
- * The band while a browser call found no browser, or Reconnect Chrome is under
- * way: the account Claude in Chrome connected as, the one the extension
- * answers, and the press that reconnects it there.
+ * The band while Connect is under way, or once a browser call found no
+ * browser: what keeps Claude in Chrome from working, and Connect where it can help.
  */
 function ChromeBand(ui: Ui, view: View, act: Actions) {
   const { Box, Text, Button } = ui
   if (view.chromeConnecting !== undefined) {
-    return <Text color="warning">◌ Reconnecting Claude in Chrome as account {named(view, view.chromeConnecting)}…</Text>
+    return <Text color="warning">{`◌ Connecting Chrome as ${named(view, view.chromeConnecting)}…`}</Text>
   }
-  const link = view.chrome
-  if (!link?.hasFailed) return undefined
-  const as = link.as === undefined ? '' : ` as account ${link.as}`
+  if (!view.chrome?.hasFailed) return undefined
   const own = view.chromeAccountId
   if (own === undefined) {
     return (
       <Box flexDirection="row" columnGap={2}>
-        <Text color="warning">⚠ Claude in Chrome found no browser{as}. Which account is your Chrome extension signed in to?</Text>
+        <Text color="warning">⚠ Claude in Chrome: which account is your Chrome extension signed in to?</Text>
         <Button key="chrome-pick" onPress={act.togglePane}>Pick it</Button>
       </Box>
     )
   }
-  const text =
-    link.as === own
-      ? `⚠ Claude in Chrome found no browser as account ${named(view, own)}, your extension's: is Chrome open?`
-      : `⚠ Claude in Chrome found no browser${as}: your Chrome extension answers only account ${named(view, own)}.`
-  const canMove = !view.isSwitchBlocked || view.activeId === own
   return (
     <Box flexDirection="row" columnGap={2}>
-      <Text color="warning">{text}</Text>
-      {canMove && (
-        <Button key="chrome-reconnect-band" variant="primary" onPress={act.reconnectChrome}>
-          Reconnect Chrome
+      <Text color="warning">{`⚠ ${chromeProblem(view) ?? `Chrome isn't connected as ${named(view, own)}.`}`}</Text>
+      {canConnectChrome(view) && (
+        <Button key="chrome-connect-band" variant="primary" onPress={act.connectChrome}>
+          Connect
         </Button>
       )}
     </Box>
@@ -550,7 +568,11 @@ function lineEnd(ui: Ui, view: View, a: Account, act: Actions) {
         remove,
         use(
           a.id === view.activeId ? (
-            <Text color={ACCENT}>● in use</Text>
+            view.chromeConnecting === a.id ? (
+              <Text color="warning">◌ Connecting Chrome…</Text>
+            ) : (
+              <Text color={ACCENT}>● in use</Text>
+            )
           ) : (
             health?.kind === 'ok' && <Button key={`use-${a.id}`} onPress={() => act.use(a.id)}>Use now</Button>
           ),
@@ -652,7 +674,7 @@ function LoginLine({ Text }: Ui, view: View) {
 /**
  * The pane: when the rotation moves on (or that it can't), and Claude Code's
  * own login, then every account, its usage and what can be done with it, then
- * where the rotation moves to, Claude in Chrome in a session that has it, and
+ * Claude in Chrome in a session that has it, where the rotation moves to, and
  * the footer's settings, each group in its box.
  */
 export function Pane(ui: Ui, view: View, now: number, act: Actions) {
@@ -670,8 +692,8 @@ export function Pane(ui: Ui, view: View, now: number, act: Actions) {
       {view.isSwitchBlocked ? <Text color="warning">{blockedRule(view)}</Text> : <Text dimColor>{rule(view.footer.fill, view.rotateTo)}</Text>}
       {LoginLine(ui, view)}
       {section(ui, 'accounts', 'Accounts', accounts)}
+      {(view.hasChrome === true || view.chromeAccountId !== undefined || (view.chromeAccountIds?.length ?? 0) > 0) && ChromeSettings(ui, view, act)}
       {RotationSettings(ui, view, act)}
-      {(view.hasChrome === true || view.chromeAccountId !== undefined) && ChromeSettings(ui, view, act)}
       {FooterSettings(ui, view, act)}
     </Box>
   )

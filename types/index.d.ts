@@ -92,12 +92,18 @@ export type View = {
    * picked in the pane, or learned when Claude in Chrome paired; kept across sessions.
    */
   chromeAccountId?: string
+  /** The accounts a Chrome extension has answered as, kept across sessions: the Chrome box lists them. */
+  chromeAccountIds?: string[]
+  /** This session only: the Chrome box also lists the accounts no Chrome extension has answered as yet. */
+  isFindingChrome?: boolean
   /** This session only: whether it has Claude in Chrome, once a call to it told. */
   hasChrome?: boolean
   /** This session only: Claude in Chrome's connection, once made. */
   chrome?: ChromeLink
-  /** This session only: Reconnect Chrome is under way, to this account. */
+  /** This session only: Connect is under way, to this account. */
   chromeConnecting?: string
+  /** This session's id, which `claude --resume` takes. */
+  sessionId?: string
   /** This session only: the footer draws imitated usage, to judge its look. */
   demo?: boolean
   /** This session's terminal draws block characters from its font, short of the line, as Terminal.app does. */

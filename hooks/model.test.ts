@@ -192,17 +192,24 @@ test('counts the browsers Claude in Chrome lists, and knows its words for none a
   expect(isNoBrowser('Tab 12 no longer exists')).toBe(false)
 })
 
-test('the note for a browser call that found no browser fits what is known: the extension\'s own account connected, none known, or a session that cannot switch', () => {
+test('the notes about Claude in Chrome say what the mod does now and what to tell the user, never /login', () => {
   const accounts = [
     { id: '1', slot: '', email: 'one@example.com' },
     { id: '2', slot: '/h/.claude/accounts/2', email: 'two@example.com' },
   ]
-  const base = { ...view({ '1': [10, 10], '2': [10, 10] }), accounts, chromeAccountId: '1', activeId: '2' }
-  expect(chromeNote({ ...base, chrome: { as: '1', isPaired: false, hasFailed: true } })).toMatch(
-    /^Claude in Chrome connected as account 1 \(one@example\.com\), the account the user's Chrome extension is signed in to, and found no browser: Chrome may be closed/,
+  const base = { ...view({ '1': [10, 10], '2': [10, 10] }), accounts, chromeAccountId: '1', activeId: '2', sessionId: 'session-1' }
+  const onTwo = { ...base, chrome: { as: '2', isPaired: false, hasFailed: true } }
+  expect(chromeNote(onTwo, 'connecting')).toBe(
+    'Claude in Chrome connected as Claude account 2 (two@example.com) and found no browser. ' +
+      "The account-rotator mod is now connecting it as Claude account 1 (one@example.com), the account the user's Chrome extension is signed in to, which takes under a minute. " +
+      "End your turn now: you'll get a message once it's connected. Don't suggest /login: it doesn't fix this.",
   )
-  expect(chromeNote({ ...base, chrome: { isPaired: false } })).toMatch(/^Claude in Chrome found no browser\. The user's Chrome extension is signed in to account 1 \(one@example\.com\)/)
-  const blocked = chromeNote({ ...base, chrome: { as: '2', isPaired: false }, isSwitchBlocked: true })
-  expect(blocked).toMatch(/doesn't let the account-rotator mod move this session there, so the browser can't be used in it\. \/login does not fix this/)
-  expect(blocked).not.toMatch(/Reconnect Chrome/)
+  expect(chromeNote(base, 'held')).toMatch(/^The account-rotator mod is connecting Claude in Chrome as Claude account 1 \(one@example\.com\).* End your turn now/)
+  expect(chromeNote(onTwo, 'no-browser')).toMatch(/^No Chrome extension answers as Claude account 1 \(one@example\.com\), the account picked for it in the Claude accounts panel: .* If it is another account, they press Use this account next to it .* If it matches, they restart Chrome and press Connect above the prompt\./)
+  const blocked = { ...onTwo, isSwitchBlocked: true }
+  expect(chromeNote(blocked, 'blocked')).toMatch(/Claude Code doesn't let this session switch accounts\. Tell the user that to use Chrome, they quit Claude Code and run `claude --resume session-1` in this terminal/)
+  // Connected as the extension's account in a session that can't move: no Connect to press, Chrome to open.
+  expect(chromeNote({ ...blocked, chrome: { as: '1', isPaired: false } }, 'no-browser')).toMatch(/If it matches, they restart Chrome, then you try again\./)
+  expect(chromeNote({ ...onTwo, chromeAccountId: undefined }, 'unset')).toMatch(/doesn't know which one that is\. Ask the user to press Use this account next to it under Chrome in the Claude accounts panel/)
+  for (const kind of ['held', 'connecting', 'no-browser', 'blocked', 'unset'] as const) expect(chromeNote(onTwo, kind)).not.toMatch(/Run \/login|run \/login/)
 })
