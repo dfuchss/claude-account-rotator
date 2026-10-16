@@ -12,16 +12,18 @@ A [Claude Code](https://code.claude.com) mod for people with more than one Claud
 /plugin install account-rotator --marketplace ivokund/claude-account-rotator
 ```
 
+**Turn on auto-update**, or you stay on the version you installed: in `/plugin`, open **Marketplaces**, pick **claude-account-rotator** and choose **Enable auto-update**. Claude Code then updates the mod each time it starts. It is off by default for every marketplace but Anthropic's own.
+
 Then click the usage in the footer, press **+ Add an account** and approve the sign-in in your browser. The account you are signed in with now is account 1.
 
-To update, pull the marketplace, then the mod, and start a new session:
+To update by hand instead, pull the marketplace, then the mod, and start a new session:
 
 ```
 claude plugin marketplace update claude-account-rotator
 claude plugin update account-rotator@claude-account-rotator
 ```
 
-Or turn on auto-update for the marketplace in `/plugin`. The [changelog](CHANGELOG.md) says what each version changed.
+The [changelog](CHANGELOG.md) says what each version changed.
 
 ## The footer
 

@@ -71,5 +71,5 @@ Expect an update to the new version, and its code under `$T/plugins/cache/claude
 
 ## 7. Say where it is
 
-- Users update with `claude plugin marketplace update claude-account-rotator`, then `claude plugin update account-rotator@claude-account-rotator`, then start a new session. Say both, in release notes too.
+- Users get it as Claude Code starts once they turn on auto-update (in `/plugin`: **Marketplaces**, **claude-account-rotator**, **Enable auto-update**), which is off by default for this marketplace. By hand, they run `claude plugin marketplace update claude-account-rotator`, then `claude plugin update account-rotator@claude-account-rotator`, then start a new session. Say both ways, in release notes too.
 - In an issue the release fixes, link the GitHub release and say which version has the fix.
