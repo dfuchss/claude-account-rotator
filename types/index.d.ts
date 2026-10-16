@@ -94,6 +94,8 @@ export type View = {
   chromeAccountId?: string
   /** The accounts a Chrome extension has answered as, kept across sessions: the Chrome box lists them. */
   chromeAccountIds?: string[]
+  /** This session only: the Chrome box also lists the accounts no Chrome extension has answered as yet. */
+  isChromeOthersShown?: boolean
   /** This session only: whether it has Claude in Chrome, once a call to it told. */
   hasChrome?: boolean
   /** This session only: Claude in Chrome's connection, once made. */

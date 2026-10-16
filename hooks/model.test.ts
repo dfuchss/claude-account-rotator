@@ -205,11 +205,11 @@ test('the notes about Claude in Chrome say what the mod does now and what to tel
       "End your turn now: you'll get a message once it's connected. Don't suggest /login: it doesn't fix this.",
   )
   expect(chromeNote(base, 'held')).toMatch(/^The account-rotator mod is connecting Claude in Chrome as Claude account 1 \(one@example\.com\).* End your turn now/)
-  expect(chromeNote(onTwo, 'no-browser')).toMatch(/^No Chrome extension answers as Claude account 1 \(one@example\.com\), the account picked for it in the Claude accounts panel: .* If it is another account, they press Use this account next to it .* If it matches, they restart Chrome and press Connect above the prompt\./)
+  expect(chromeNote(onTwo, 'no-browser')).toMatch(/^No Chrome extension answers as Claude account 1 \(one@example\.com\), the account picked for it in the Claude accounts panel: .* If it is another account, they press Use for Chrome or Try to connect next to it .* If it matches, they restart Chrome and press Connect above the prompt\./)
   const blocked = { ...onTwo, isSwitchBlocked: true }
   expect(chromeNote(blocked, 'blocked')).toMatch(/Claude Code doesn't let this session switch accounts\. Tell the user that to use Chrome, they quit Claude Code and run `claude --resume session-1` in this terminal/)
   // Connected as the extension's account in a session that can't move: no Connect to press, Chrome to open.
   expect(chromeNote({ ...blocked, chrome: { as: '1', isPaired: false } }, 'no-browser')).toMatch(/If it matches, they restart Chrome, then you try again\./)
-  expect(chromeNote({ ...onTwo, chromeAccountId: undefined }, 'unset')).toMatch(/doesn't know which one that is\. Ask the user to press Use this account next to it under Chrome in the Claude accounts panel/)
+  expect(chromeNote({ ...onTwo, chromeAccountId: undefined }, 'unset')).toMatch(/doesn't know which one that is\. Ask the user to press Use for Chrome or Try to connect next to it under Chrome in the Claude accounts panel/)
   for (const kind of ['held', 'connecting', 'no-browser', 'blocked', 'unset'] as const) expect(chromeNote(onTwo, kind)).not.toMatch(/Run \/login|run \/login/)
 })

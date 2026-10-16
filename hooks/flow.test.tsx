@@ -41,10 +41,11 @@ type World = {
   /** Claude Code's security policy refuses every switch, as in a session on a Team seat. */
   refuseEnv?: boolean
   /**
-   * Claude in Chrome, where the session has it: the slot of the account the
-   * Chrome extension is signed in to, and the slot its connection was made as.
+   * Claude in Chrome, where the session has it: the slots of the accounts a
+   * Chrome extension is signed in to, one per Chrome profile, and the slot its
+   * connection was made as.
    */
-  chrome?: { extension: string; as?: string }
+  chrome?: { extensions: string[]; as?: string }
   /** The slot in use at each of the mod's calls to Claude in Chrome, the session having it or not. */
   chromeAsked: string[]
   /** The slash commands the mod ran, as typed. */
@@ -129,10 +130,10 @@ function world(on: On, w: World, store: Record<string, unknown>): MockClock {
     return { text: 'Login successful' }
   })
   // Claude in Chrome connects at its first call, as the slot the session is on then, until `/mcp reconnect`;
-  // a browser answers only where that is the account the Chrome extension is signed in to.
+  // a browser answers only where that is an account a Chrome extension is signed in to.
   const isAnswered = (chrome: NonNullable<World['chrome']>) => {
     chrome.as ??= slot
-    return chrome.as === chrome.extension
+    return chrome.extensions.includes(chrome.as)
   }
   on('mcp.call', (_$, e) => {
     w.chromeAsked.push(slot)
@@ -972,7 +973,7 @@ const slots = (w: World) => w.envSets.map(e => e.value ?? '')
 
 test('before the rotation moves the session off Claude Code\'s login, Claude in Chrome connects there, where the extension answers, and goes on answering as the session moves', async ($, on) => {
   const w = fresh()
-  w.chrome = { extension: '' }
+  w.chrome = { extensions: [''] }
   w.emails = { '': 'one@example.com', [SLOT2]: 'two@example.com' }
   await spentOne(w)
   const clock = world(on, w, TWO_LOGINS)
@@ -993,14 +994,168 @@ test('before the rotation moves the session off Claude Code\'s login, Claude in 
   expect(await pane.find({ type: 'Text', text: 'Active Claude extension accounts from your Chrome windows:' })).toBeDefined()
   expect((await pane.find({ key: 'chrome-row-1' }))?.text).toMatch(/● in use$/)
   expect(await pane.find({ key: 'chrome-use-1' })).toBeUndefined()
-  // No Chrome extension has answered as login 2: it isn't listed.
+  // No Chrome extension has answered as login 2: it waits behind Other accounts.
   expect(await pane.find({ key: 'chrome-row-2' })).toBeUndefined()
+  expect((await pane.find({ key: 'chrome-others' }))?.text).toBe('▸ Other accounts')
+  await pane.unmount()
+})
+
+test('a Chrome opened later on an account the box hasn\'t listed is a press away: Other accounts lists the rest, and Try to connect connects there and lists it, the one before with Use for Chrome', async ($, on) => {
+  const w = fresh()
+  w.chrome = { extensions: [''] }
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
+  w.usage['tok-1'] = [20, 40]
+  w.usage['tok-2'] = [10, 30]
+  const clock = world(on, w, { ...TWO_LOGINS, 'chrome-account': '1' })
+  await start($, clock)
+  // As it opened: connected on login 1, where the session is, and a browser answered there.
+  expect(w.chromeAsked).toEqual([''])
+  const pane = await mountPane($)
+  expect((await pane.find({ key: 'chrome-row-1' }))?.text).toMatch(/● in use$/)
+  expect(await pane.find({ key: 'chrome-row-2' })).toBeUndefined()
+  // Chrome opens in a second profile, signed in to login 2's account.
+  w.chrome.extensions.push(SLOT2)
+  await pane.press({ key: 'chrome-others' })
+  await clock.settle()
+  await pane.redraw()
+  expect((await pane.find({ key: 'chrome-others' }))?.text).toBe('▾ Other accounts')
+  expect((await pane.find({ key: 'chrome-try-2' }))?.text).toBe('Try to connect')
+  await pane.press({ key: 'chrome-try-2' })
+  await clock.settle()
+  expect(slots(w)).toEqual([SLOT2])
+  await clock.advance(36_000)
+  expect(w.commands).toEqual(['/mcp reconnect claude-in-chrome'])
+  expect(w.chromeAsked).toEqual(['', SLOT2])
+  expect(w.toasts).toContain('Claude in Chrome is connected as Claude account 2 (two@example.com).')
+  expect(slots(w)).toEqual([SLOT2, ''])
+  // Kept in the store every session reads: both listed from now on, login 2 in use, none left behind the press.
+  await clock.advance(61_000)
+  await pane.redraw()
+  expect((await pane.find({ key: 'chrome-row-2' }))?.text).toMatch(/● in use$/)
+  expect((await pane.find({ key: 'chrome-use-1' }))?.text).toBe('Use for Chrome')
+  expect(await pane.find({ key: 'chrome-others' })).toBeUndefined()
+  await pane.unmount()
+})
+
+test('Try to connect as an account no Chrome answers as changes nothing: the box keeps the accounts that answered, lists none that didn\'t as active, and Claude in Chrome goes back to the one picked before', async ($, on) => {
+  const w = fresh()
+  w.chrome = { extensions: [''] }
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
+  w.usage['tok-1'] = [20, 40]
+  w.usage['tok-2'] = [10, 30]
+  const clock = world(on, w, { ...TWO_LOGINS, 'chrome-account': '1' })
+  await start($, clock)
+  const pane = await mountPane($)
+  await pane.press({ key: 'chrome-others' })
+  await clock.settle()
+  await pane.redraw()
+  expect(await pane.find({ type: 'Text', text: 'No Chrome extension is known to answer as these:' })).toBeDefined()
+  await pane.press({ key: 'chrome-try-2' })
+  await clock.settle()
+  expect(slots(w)).toEqual([SLOT2])
+  await clock.advance(36_000)
+  expect(w.chromeAsked).toEqual(['', SLOT2])
+  expect(w.toasts).toContain(
+    'No Chrome extension answers as Claude account 2 (two@example.com). Open Chrome and check its Claude extension is signed in with that email; if it is, restart Chrome and try again. ' +
+      'Claude in Chrome goes back to account 1 (one@example.com).',
+  )
+  // Back on login 1, Claude in Chrome connects there again once the move lands.
+  expect(slots(w)).toEqual([SLOT2, ''])
+  await clock.advance(36_000)
+  expect(w.commands).toEqual(['/mcp reconnect claude-in-chrome', '/mcp reconnect claude-in-chrome'])
+  expect(w.chromeAsked).toEqual(['', SLOT2, ''])
+  expect(w.toasts).toContain('Claude in Chrome is connected as Claude account 1 (one@example.com).')
+  // Kept in the store every session reads: login 1 still picked, listed and in use; login 2 only behind Other accounts.
+  await clock.advance(61_000)
+  await pane.redraw()
+  expect((await pane.find({ key: 'chrome-row-1' }))?.text).toMatch(/● in use$/)
+  expect(await pane.find({ key: 'chrome-try-2' })).toBeDefined()
+  await pane.press({ key: 'chrome-others' })
+  await clock.settle()
+  await pane.redraw()
+  expect(await pane.find({ key: 'chrome-row-2' })).toBeUndefined()
+  expect((await pane.find({ key: 'account-1' }))?.text).toMatch(/one@example\.com.*Chrome/)
+  expect((await pane.find({ key: 'account-2' }))?.text).toMatch(/two@example\.com/)
+  expect((await pane.find({ key: 'account-2' }))?.text).not.toMatch(/Chrome/)
+  await pane.unmount()
+})
+
+test('Use for Chrome on a listed account whose Chrome has closed since finds no browser: the box lists it no more, Try to connect under Other accounts, and Claude in Chrome goes back to the one picked before', async ($, on) => {
+  const w = fresh()
+  w.chrome = { extensions: ['', SLOT2] }
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
+  w.usage['tok-1'] = [20, 40]
+  w.usage['tok-2'] = [10, 30]
+  const clock = world(on, w, { ...TWO_LOGINS, 'chrome-account': '1', 'chrome-accounts': ['1', '2'] })
+  await start($, clock)
+  const pane = await mountPane($)
+  expect((await pane.find({ key: 'chrome-row-1' }))?.text).toMatch(/● in use$/)
+  expect((await pane.find({ key: 'chrome-use-2' }))?.text).toBe('Use for Chrome')
+  expect(await pane.find({ key: 'chrome-others' })).toBeUndefined()
+  // The Chrome profile signed in to login 2's account closes.
+  w.chrome.extensions = ['']
+  await pane.press({ key: 'chrome-use-2' })
+  await clock.settle()
+  expect(slots(w)).toEqual([SLOT2])
+  await clock.advance(36_000)
+  expect(w.chromeAsked).toEqual(['', SLOT2])
+  expect(w.toasts).toContain(
+    'No Chrome extension answers as Claude account 2 (two@example.com). Open Chrome and check its Claude extension is signed in with that email; if it is, restart Chrome and try again. ' +
+      'Claude in Chrome goes back to account 1 (one@example.com).',
+  )
+  expect(slots(w)).toEqual([SLOT2, ''])
+  await clock.advance(36_000)
+  expect(w.chromeAsked).toEqual(['', SLOT2, ''])
+  // Kept in the store every session reads: login 1 picked and in use, login 2 behind Other accounts, to try again.
+  await clock.advance(61_000)
+  await pane.redraw()
+  expect((await pane.find({ key: 'chrome-row-1' }))?.text).toMatch(/● in use$/)
+  expect(await pane.find({ key: 'chrome-row-2' })).toBeUndefined()
+  await pane.press({ key: 'chrome-others' })
+  await clock.settle()
+  await pane.redraw()
+  expect((await pane.find({ key: 'chrome-try-2' }))?.text).toBe('Try to connect')
+  await pane.unmount()
+})
+
+test('a window opening while the picked account\'s Chrome is closed lists that account no more, and a browser call answered there lists it in use again', async ($, on) => {
+  const w = fresh()
+  w.chrome = { extensions: [] }
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
+  w.usage['tok-1'] = [20, 40]
+  w.usage['tok-2'] = [10, 30]
+  const clock = world(on, w, { ...TWO_LOGINS, 'chrome-account': '1', 'chrome-accounts': ['1', '2'] })
+  await start($, clock)
+  expect(w.chromeAsked).toEqual([''])
+  // Kept in the store every session reads: login 2, not checked, still listed.
+  await clock.advance(61_000)
+  const pane = await mountPane($)
+  expect(await pane.find({ key: 'chrome-row-1' })).toBeUndefined()
+  expect((await pane.find({ key: 'chrome-use-2' }))?.text).toBe('Use for Chrome')
+  expect((await pane.find({ key: 'chrome-others' }))?.text).toBe('▸ Other accounts')
+  expect(
+    await pane.find({
+      type: 'Text',
+      text: '⚠ No Chrome extension answers as account 1 (one@example.com). Open Chrome and check its Claude extension is signed in with that email; if it is, restart Chrome.',
+    }),
+  ).toBeDefined()
+  // Chrome opens, signed in to login 1's account.
+  w.chrome.extensions.push('')
+  expect((await browse($, 'tabs_context_mcp')).isError).toBeUndefined()
+  await clock.advance(61_000)
+  await pane.redraw()
+  expect((await pane.find({ key: 'chrome-row-1' }))?.text).toMatch(/● in use$/)
+  expect(await pane.find({ type: 'Text', text: /^⚠/ })).toBeUndefined()
   await pane.unmount()
 })
 
 test('as a session opens it visits the extension\'s account to connect Claude in Chrome there, whatever usage that has left, and comes back; browser calls wait meanwhile', async ($, on) => {
   const w = fresh()
-  w.chrome = { extension: SLOT2 }
+  w.chrome = { extensions: [SLOT2] }
   await spentTwo(w)
   const clock = world(on, w, { ...TWO_LOGINS, 'chrome-account': '2' })
   await start($, clock)
@@ -1034,7 +1189,7 @@ test('as a session opens it visits the extension\'s account to connect Claude in
 
 test('a turn that hits the usage limit while the session visits a spent extension account carries on once it is back', async ($, on) => {
   const w = fresh()
-  w.chrome = { extension: SLOT2 }
+  w.chrome = { extensions: [SLOT2] }
   await spentTwo(w)
   const clock = world(on, w, { ...TWO_LOGINS, 'chrome-account': '2' })
   await start($, clock)
@@ -1050,7 +1205,7 @@ test('a turn that hits the usage limit while the session visits a spent extensio
 
 test('when the connection drops and comes back as the account in use, the next browser call has the mod reconnect it as the extension\'s account, not /login, and tell Claude to carry on once one answers', async ($, on) => {
   const w = fresh()
-  w.chrome = { extension: '' }
+  w.chrome = { extensions: [''] }
   w.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = SLOT2
   await spentOne(w)
   const clock = world(on, w, { ...TWO_LOGINS, 'chrome-account': '1' })
@@ -1089,7 +1244,7 @@ test('when the connection drops and comes back as the account in use, the next b
 
 test('a session Claude Code stops from switching, on another account than the extension\'s, can\'t connect Claude in Chrome: Claude and the band give the command that brings the conversation back connected', async ($, on) => {
   const w = fresh()
-  w.chrome = { extension: '' }
+  w.chrome = { extensions: [''] }
   w.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = SLOT2
   w.refuseEnv = true
   await spentOne(w)
@@ -1105,12 +1260,17 @@ test('a session Claude Code stops from switching, on another account than the ex
   await band.unmount()
   expect(w.envSets).toEqual([])
   expect(w.commands).toEqual([])
-  // Connected as login 1 after all, the box still says why it offers no other account.
+  // Connected after all, the box says why the accounts behind Other accounts can't be tried here.
   await clock.advance(61_000)
   w.chrome.as = ''
   expect((await browse($, 'tabs_context_mcp')).isError).toBeUndefined()
   const pane = await mountPane($)
   expect(await pane.find({ key: 'chrome-use-2' })).toBeUndefined()
+  await pane.press({ key: 'chrome-others' })
+  await clock.settle()
+  await pane.redraw()
+  expect(await pane.find({ key: 'chrome-row-1' })).toBeDefined()
+  expect(await pane.find({ key: 'chrome-try-1' })).toBeUndefined()
   expect(
     await pane.find({ type: 'Text', text: "⚠ This window can't switch accounts, so Chrome can't move to another one here. Quit, then run: claude --resume session-1" }),
   ).toBeDefined()
@@ -1119,7 +1279,7 @@ test('a session Claude Code stops from switching, on another account than the ex
 
 test('with no account named for the Chrome extension, a browser call that finds no browser has Claude ask which it is; picked in the pane, Connect connects there, comes back, and tells Claude to carry on', async ($, on) => {
   const w = fresh()
-  w.chrome = { extension: '' }
+  w.chrome = { extensions: [''] }
   w.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = SLOT2
   w.keychain['Claude Code-credentials'] = blob('tok-1')
   w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
@@ -1128,7 +1288,7 @@ test('with no account named for the Chrome extension, a browser call that finds 
   const clock = world(on, w, TWO_LOGINS)
   await start($, clock)
   const called = await browse($, 'tabs_context_mcp')
-  expect(called.context?.[0]).toMatch(/^Claude in Chrome connected as Claude account 2 \(two@example\.com\) and found no browser\. .* Ask the user to press Use this account next to it under Chrome in the Claude accounts panel/)
+  expect(called.context?.[0]).toMatch(/^Claude in Chrome connected as Claude account 2 \(two@example\.com\) and found no browser\. .* Ask the user to press Use for Chrome or Try to connect next to it under Chrome in the Claude accounts panel/)
   const band = await mountBand($)
   expect(await band.find({ type: 'Text', text: '⚠ Claude in Chrome: which account is your Chrome extension signed in to?' })).toBeDefined()
   await band.press({ key: 'chrome-pick' })
@@ -1137,8 +1297,8 @@ test('with no account named for the Chrome extension, a browser call that finds 
   await band.unmount()
   const pane = await mountPane($)
   expect(await pane.find({ type: 'Text', text: 'No Chrome extension found yet. Which account is yours signed in to?' })).toBeDefined()
-  expect(await pane.find({ key: 'chrome-use-2' })).toBeDefined()
-  await pane.press({ key: 'chrome-use-1' })
+  expect(await pane.find({ key: 'chrome-try-2' })).toBeDefined()
+  await pane.press({ key: 'chrome-try-1' })
   await clock.settle()
   expect(slots(w)).toEqual([''])
   await clock.advance(36_000)
@@ -1154,7 +1314,7 @@ test('with no account named for the Chrome extension, a browser call that finds 
 
 test('a Connect that finds no browser says to check Chrome and its extension\'s email, and a call that finds none then asks the person instead of connecting again', async ($, on) => {
   const w = fresh()
-  w.chrome = { extension: 'a browser signed in elsewhere' }
+  w.chrome = { extensions: ['a browser signed in elsewhere'] }
   w.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = SLOT2
   await spentOne(w)
   const clock = world(on, w, { ...TWO_LOGINS, 'chrome-account': '1' })
@@ -1186,7 +1346,7 @@ test('a Connect that finds no browser says to check Chrome and its extension\'s 
 
 test('a browser answering as another account than the one picked for the extension lists that account in use, and leaves the pick as it is', async ($, on) => {
   const w = fresh()
-  w.chrome = { extension: '' }
+  w.chrome = { extensions: [''] }
   w.keychain['Claude Code-credentials'] = blob('tok-1')
   w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
   w.usage['tok-1'] = [20, 40]
@@ -1199,7 +1359,9 @@ test('a browser answering as another account than the one picked for the extensi
   await clock.advance(61_000)
   const pane = await mountPane($)
   expect((await pane.find({ key: 'chrome-row-1' }))?.text).toMatch(/● in use$/)
-  expect(await pane.find({ key: 'chrome-use-2' })).toBeDefined()
+  // Login 2, picked but never answered as, isn't listed as active: it waits behind Other accounts.
+  expect(await pane.find({ key: 'chrome-row-2' })).toBeUndefined()
+  expect((await pane.find({ key: 'chrome-others' }))?.text).toBe('▸ Other accounts')
   // Still the account new sessions connect as.
   expect(await pane.find({ type: 'Text', text: 'Chrome' })).toBeDefined()
   await pane.unmount()
@@ -1207,7 +1369,7 @@ test('a browser answering as another account than the one picked for the extensi
 
 test('a guess at Claude Code\'s login that finds no browser leaves the extension\'s account to be picked, and is not tried again', async ($, on) => {
   const w = fresh()
-  w.chrome = { extension: SLOT2 }
+  w.chrome = { extensions: [SLOT2] }
   await spentOne(w)
   const clock = world(on, w, TWO_LOGINS)
   await start($, clock)
@@ -1228,7 +1390,7 @@ test('a guess at Claude Code\'s login that finds no browser leaves the extension
 
 test('a session that a guess at Claude Code\'s login found no browser for before does not guess it again', async ($, on) => {
   const w = fresh()
-  w.chrome = { extension: SLOT2 }
+  w.chrome = { extensions: [SLOT2] }
   await spentOne(w)
   const clock = world(on, w, { ...TWO_LOGINS, 'chrome-miss': '1' })
   await start($, clock)

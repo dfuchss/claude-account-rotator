@@ -166,9 +166,7 @@ async function mergeStore($: Host): Promise<void> {
   const chrome = await $.store.get('chrome-account')
   const chromeAccountId = typeof chrome === 'string' && accounts.some(a => a.id === chrome) ? chrome : undefined
   const seen = await $.store.get('chrome-accounts')
-  const chromeAccountIds = (Array.isArray(seen) ? seen : chromeAccountId === undefined ? [] : [chromeAccountId]).filter(
-    (id): id is string => typeof id === 'string' && accounts.some(a => a.id === id),
-  )
+  const chromeAccountIds = (Array.isArray(seen) ? seen : []).filter((id): id is string => typeof id === 'string' && accounts.some(a => a.id === id))
   await setView($, v => {
     const nextReadings: Record<string, Reading> = {}
     const nextHealth: Record<string, Health> = {}
@@ -208,10 +206,10 @@ async function setChromeAccount($: Host, id: string | undefined): Promise<void> 
   await setView($, v => ({ ...v, chromeAccountId: id }))
 }
 
-/** A Chrome extension answered as `id`, or the account is gone: the Chrome box lists it, or not, for every session. */
+/** A Chrome extension answered as `id`, or none did, or the account is gone: the Chrome box lists it, or not, for every session. */
 async function noteChromeAccount($: Host, id: string, isSeen: boolean): Promise<void> {
   const stored = await $.store.get('chrome-accounts')
-  const before = Array.isArray(stored) ? stored.filter((x): x is string => typeof x === 'string') : ((await getView($)).chromeAccountIds ?? [])
+  const before = Array.isArray(stored) ? stored.filter((x): x is string => typeof x === 'string') : []
   const ids = isSeen ? [...new Set([...before, id])] : before.filter(x => x !== id)
   if (ids.length !== before.length) await $.store.set('chrome-accounts', ids)
   await setView($, v => ({ ...v, chromeAccountIds: ids }))
@@ -626,8 +624,9 @@ async function learnChrome($: Host, account: Account): Promise<void> {
 
 /**
  * What an answer tells, Claude in Chrome having connected as `as`: whether the
- * session has it, how its connection stands, and, a browser answering, the
- * extension's account. A guess that finds none is kept, so it is not tried again.
+ * session has it, how its connection stands, whether the Chrome box lists the
+ * account, and, a browser answering, the extension's account. A guess at
+ * Claude Code's login that finds none is kept, so it is not tried again.
  */
 async function noteChrome($: Host, as: Account, answer: ChromeAnswer): Promise<void> {
   if (answer === 'absent' || answer === 'failed') {
@@ -640,10 +639,9 @@ async function noteChrome($: Host, as: Account, answer: ChromeAnswer): Promise<v
     hasChrome: true,
     chrome: { as: as.id, isPaired, ...(!isPaired && v.chrome?.hasFailed ? { hasFailed: true } : {}) },
   }))
-  if (isPaired) {
-    await noteChromeAccount($, as.id, true)
-    await learnChrome($, as)
-  } else if ((await getView($)).chromeAccountId === undefined) await $.store.set('chrome-miss', as.id)
+  await noteChromeAccount($, as.id, isPaired)
+  if (isPaired) await learnChrome($, as)
+  else if ((await getView($)).chromeAccountId === undefined && as.slot === '') await $.store.set('chrome-miss', as.id)
 }
 
 /**
@@ -678,20 +676,21 @@ function shouldConnectAtOpen(view: View): boolean {
 }
 
 /**
- * Connect: visits the account the Chrome extension is signed in to, as Claude
- * Code connects Claude in Chrome with the sign-in the session uses: moves the
- * session there, has Claude in Chrome connect once the move lands (again,
- * where it connected before), asks which browsers answer, and moves back. The
- * connection stays. Then Claude carries on: held back from the browser, or cut
- * by a usage limit on the way. Quiet as the session opens: the pane says how it went.
+ * Connect: visits the account the Chrome extension is signed in to, or one
+ * tried for it, as Claude Code connects Claude in Chrome with the sign-in the
+ * session uses: moves the session there, has Claude in Chrome connect once the
+ * move lands (again, where it connected before), asks which browsers answer,
+ * and moves back. The connection stays. Then Claude carries on: held back from
+ * the browser, or cut by a usage limit on the way. Quiet as the session opens:
+ * the pane says how it went. Answers what the browsers did, where it asked them.
  */
-function connectChrome($: Host, isQuiet = false): Promise<void> {
-  if (isConnectingChrome) return Promise.resolve()
+function connectChrome($: Host, isQuiet = false, tryId?: string): Promise<ChromeAnswer | undefined> {
+  if (isConnectingChrome) return Promise.resolve(undefined)
   isConnectingChrome = true
   return (async () => {
     let done: { target: Account; answer: ChromeAnswer; isVisit: boolean } | undefined
     try {
-      done = await connectingChrome($, isQuiet)
+      done = await connectingChrome($, isQuiet, tryId)
     } finally {
       isConnectingChrome = false
       await setView($, v => ({ ...v, chromeConnecting: undefined }))
@@ -701,24 +700,40 @@ function connectChrome($: Host, isQuiet = false): Promise<void> {
     const text = isConnected && done !== undefined ? `Claude in Chrome is connected as Claude account ${label(done.target)}. Continue where you left off.` : isCutByVisit ? CONTINUE : undefined
     if (isConnected) isChromeAwaited = false
     isCutByVisit = false
-    if (text === undefined) return
-    // Once the move back lands: until then the turn's requests may go out as the extension's account.
-    if (isMoved) $.clock.after(SETTLE_MS, () => void $.prompt.submit({ text }))
-    else void $.prompt.submit({ text })
+    if (text !== undefined) {
+      // Once the move back lands: until then the turn's requests may go out as the extension's account.
+      if (isMoved) $.clock.after(SETTLE_MS, () => void $.prompt.submit({ text }))
+      else void $.prompt.submit({ text })
+    }
+    return done?.answer
   })()
 }
 
-/** Use this account: Claude in Chrome connects as it, in this session now and in every session from now on. */
-async function useChromeAccount($: Host, id: string): Promise<void> {
-  await setChromeAccount($, id)
-  await connectChrome($)
+/**
+ * Use for Chrome, on an account a browser answered as, or Try to connect, on
+ * another: Claude in Chrome connects as the account, which once a browser
+ * answers there is the extension's, in this session now and in every session
+ * from now on. Where none answers, the Chrome box lists it no more, and Claude
+ * in Chrome connects again as the account picked before.
+ */
+async function tryChromeAccount($: Host, id: string): Promise<void> {
+  const answer = await connectChrome($, false, id)
+  const picked = (await getView($)).chromeAccountId
+  if (answer === 'paired') await setView($, v => ({ ...v, isChromeOthersShown: false }))
+  else if ((answer === 'unpaired' || answer === 'failed') && picked !== undefined && picked !== id) await connectChrome($)
 }
 
-async function connectingChrome($: Host, isQuiet: boolean): Promise<{ target: Account; answer: ChromeAnswer; isVisit: boolean } | undefined> {
+async function connectingChrome(
+  $: Host,
+  isQuiet: boolean,
+  tryId: string | undefined,
+): Promise<{ target: Account; answer: ChromeAnswer; isVisit: boolean } | undefined> {
   const view = await getView($)
-  const target = view.accounts.find(a => a.id === view.chromeAccountId)
+  const target = view.accounts.find(a => a.id === (tryId ?? view.chromeAccountId))
   const from = view.accounts.find(a => a.id === view.activeId)
-  if (target === undefined || from === undefined || !canConnectChrome(view)) return undefined
+  if (target === undefined || from === undefined || !canConnectChrome({ ...view, chromeAccountId: target.id })) return undefined
+  // Tried for the extension: the account picked before stays its own until a browser answers as this one.
+  const isTrial = target.id !== view.chromeAccountId
   const active = await refreshingSoon($, view, target, await $.clock.now())
   if (active !== undefined) {
     if (!isQuiet) tell($, `Chrome can connect as account ${target.id} once account ${active.id}'s token has refreshed: try again in a few minutes.`)
@@ -739,8 +754,10 @@ async function connectingChrome($: Host, isQuiet: boolean): Promise<{ target: Ac
     }
   }
   const answer = await askChrome($)
+  if (isTrial && answer === 'paired') await setChromeAccount($, target.id)
   await noteChrome($, target, answer)
-  hasChromeMissed = answer === 'unpaired'
+  // Whether a browser answers as the extension's account: a trial that found none didn't ask there.
+  if (!isTrial || answer === 'paired') hasChromeMissed = answer === 'unpaired'
   if (answer === 'paired') {
     // A browser answering as the account shows the switch took: the rotation need not wait for a response to say so.
     untaken.delete(target.id)
@@ -749,7 +766,12 @@ async function connectingChrome($: Host, isQuiet: boolean): Promise<{ target: Ac
   if (isVisit) await leaveVisit($, from)
   if (!isQuiet && answer === 'paired') tell($, `Claude in Chrome is connected as Claude account ${label(target)}.`)
   if (!isQuiet && answer === 'unpaired') {
-    tell($, `No Chrome extension answers as Claude account ${label(target)}. Open Chrome and check its Claude extension is signed in with that email; if it is, restart Chrome.`)
+    const back = isTrial ? view.accounts.find(a => a.id === view.chromeAccountId) : undefined
+    tell(
+      $,
+      `No Chrome extension answers as Claude account ${label(target)}. Open Chrome and check its Claude extension is signed in with that email; if it is, restart Chrome${isTrial ? ' and try again' : ''}.` +
+        (back === undefined ? '' : ` Claude in Chrome goes back to account ${label(back)}.`),
+    )
   }
   return { target, answer, isVisit }
 }
@@ -966,7 +988,8 @@ function actions($: Host): Actions {
     remove: id => background(removeAccount($, id)),
     setFooter: change => background(setFooter($, change)),
     setRotateTo: rotateTo => background(setRotateTo($, rotateTo)),
-    useChromeAccount: id => background(useChromeAccount($, id)),
+    tryChromeAccount: id => background(tryChromeAccount($, id)),
+    toggleChromeOthers: () => background(setView($, v => ({ ...v, isChromeOthersShown: !v.isChromeOthersShown }))),
     connectChrome: () => background(connectChrome($)),
     setDemo: on => background(setView($, v => ({ ...v, demo: on }))),
   }

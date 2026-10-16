@@ -447,7 +447,7 @@ export function chromeNote(view: View, kind: ChromeNoteKind): string {
     case 'no-browser':
       return (
         `No Chrome extension answers as ${named(view.chromeAccountId) ?? 'that account'}, the account picked for it in the Claude accounts panel: Chrome may be closed, its Claude extension signed in with another email, or its connection stuck. ` +
-        'Ask the user to open Chrome and check the email its Claude extension is signed in with. If it is another account, they press Use this account next to it under Chrome in the Claude accounts panel (click the usage under the prompt). ' +
+        "Ask the user to open Chrome and check the email its Claude extension is signed in with. If it is another account, they press Use for Chrome or Try to connect next to it under Chrome in the Claude accounts panel (click the usage under the prompt; under Other accounts if it isn't listed). " +
         (canConnectChrome(view)
           ? `If it matches, they restart Chrome and press Connect above the prompt. You'll get a message once it's connected. ${noLogin}`
           : `If it matches, they restart Chrome, then you try again. ${noLogin}`)
@@ -460,7 +460,7 @@ export function chromeNote(view: View, kind: ChromeNoteKind): string {
     case 'unset':
       return (
         `${found} The user's Chrome extension answers only the Claude account it is signed in to, and the account-rotator mod doesn't know which one that is. ` +
-        `Ask the user to press Use this account next to it under Chrome in the Claude accounts panel (click the usage under the prompt). You'll get a message once it's connected. ${noLogin}`
+        `Ask the user to press Use for Chrome or Try to connect next to it under Chrome in the Claude accounts panel (click the usage under the prompt; under Other accounts if it isn't listed). You'll get a message once it's connected. ${noLogin}`
       )
   }
 }
