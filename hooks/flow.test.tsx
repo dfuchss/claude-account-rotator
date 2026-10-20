@@ -50,6 +50,30 @@ type World = {
   chromeAsked: string[]
   /** The slash commands the mod ran, as typed. */
   commands: string[]
+  /** The session's id: a /clear or a /resume gives the process another (replaceSession). */
+  sessionId?: string
+  /** The session ids the mod read, in order. */
+  sessionIds?: string[]
+  /** The session's state was dropped with it, and the mod has not written since. */
+  isStateDropped?: boolean
+}
+
+/** A /clear or an in-session /resume: the process goes on under a new id, with no session.start and the session's state empty. */
+function replaceSession(w: World, id: string): void {
+  w.sessionId = id
+  w.isStateDropped = true
+}
+
+/** The session's state as the host keeps it: dropped by replaceSession, empty until the mod writes it again. */
+function sessionState(on: On, w: World): void {
+  on('state.get', async (_$, e, next) => {
+    const read = await next(e)
+    return w.isStateDropped && read.value !== undefined ? { value: { value: undefined, version: read.value.version } } : read
+  })
+  on('state.set', (_$, e, next) => {
+    w.isStateDropped = false
+    return next(e)
+  })
 }
 
 /** Claude Code's words for a browser call that found no browser, as a session moved off its login gets them. */
@@ -155,7 +179,12 @@ function world(on: On, w: World, store: Record<string, unknown>): MockClock {
     return { text: e.text }
   })
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
-  on('session.id', () => ({ value: 'session-1' }))
+  on('session.id', () => {
+    const id = w.sessionId ?? 'session-1'
+    w.sessionIds = [...(w.sessionIds ?? []), id]
+    return { value: id }
+  })
+
   on('tool.check', () => ({ decision: 'allow' as const }))
   on('session.usage', () => ({ value: { startedAt: NOW, context: { window: 200_000 }, rateLimits: w.limits } }))
   on('session.measure', (_$, e) => ({ changed: e.changed }))
@@ -248,6 +277,58 @@ test('a login with nothing in the keychain shows as needing a sign-in, with one 
     await band.unmount()
   }
   expect(w.envSets).toEqual([])
+})
+
+for (const command of ['/clear', '/resume'] as const) {
+  test(`after a ${command} the next draw adopts the new session, its view empty: the footer shows the logins again, with no Chrome connect or switch`, async ($, on) => {
+    const w = fresh()
+    w.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = SLOT2
+    w.keychain['Claude Code-credentials'] = blob('tok-1')
+    w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
+    w.usage['tok-1'] = [20, 30]
+    w.usage['tok-2'] = [10, 30]
+    const clock = world(on, w, TWO_LOGINS)
+    sessionState(on, w)
+    // Claude Code's own footer, drawn where the mod's view has no logins to show.
+    on('ui.render', { component: 'SessionMode' }, () => ({ type: 'Text' as const, props: {}, children: ['modes'] }))
+    await start($, clock)
+    const before = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+    const glyphs = (await before.find(GLYPHS))?.text
+    await before.unmount()
+    const asked = w.chromeAsked.length
+    replaceSession(w, 'session-2')
+    const footer = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+    await clock.settle()
+    expect(w.sessionIds).toEqual(['session-1', 'session-2'])
+    expect(glyphs).toBeDefined()
+    expect((await footer.find(GLYPHS))?.text).toBe(glyphs)
+    await footer.unmount()
+    expect(w.envSets).toEqual([])
+    expect(w.chromeAsked).toHaveLength(asked)
+  })
+}
+
+test('a response measured after a /clear, before anything draws, is the reading of the login in use, not of login 1', async ($, on) => {
+  const w = fresh()
+  w.env.CLAUDE_SECURESTORAGE_CONFIG_DIR = SLOT2
+  w.keychain['Claude Code-credentials'] = blob('tok-1')
+  w.keychain[await keychainItem(SLOT2)] = blob('tok-2')
+  w.usage['tok-1'] = [20, 30]
+  w.usage['tok-2'] = [10, 30]
+  const clock = world(on, w, TWO_LOGINS)
+  sessionState(on, w)
+  await start($, clock)
+  replaceSession(w, 'session-2')
+  w.limits = [
+    { kind: 'five_hour', percentUsed: 50, resetsAt: '2026-10-12T12:00:00Z' },
+    { kind: 'seven_day', percentUsed: 35, resetsAt: '2026-10-18T03:00:00Z' },
+  ]
+  await $.session.measure({ context: { window: 200_000 }, rateLimits: w.limits, changed: ['rateLimits'] })
+  await clock.settle()
+  // Login 1 keeps the 80% left it had; login 2, in use, has 50% of its 5-hour window and 65% of its week.
+  const footer = await $.ui.mount({ plugin: 'account-rotator', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+  expect((await footer.find(GLYPHS))?.text).toBe(' ⣷│⣦│  50% \n ▆│▆│  65% ')
+  await footer.unmount()
 })
 
 test('moves to the login with room once the active one passes 90% of its 5-hour window', async ($, on) => {

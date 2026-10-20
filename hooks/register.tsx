@@ -96,6 +96,15 @@ const untaken = new Set<string>()
 let movedAt: number | undefined
 /** Connect is under way: the rotation waits for it, and browser calls are held back. */
 let isConnectingChrome = false
+/**
+ * The session the view was set up for. A /clear or a /resume goes on in this
+ * process under another id, with no session.start and, the view being the
+ * session's, an empty view: the next one is adopted (adoptSession).
+ */
+let sessionId: string | undefined
+/** The view as last read for that session, carried over to the next. */
+let lastView: View | undefined
+let adopting: Promise<void> | undefined
 
 // ---------------------------------------------------------------- state
 // The view is this session's; the store is one JSON file every session of the
@@ -105,7 +114,11 @@ let isConnectingChrome = false
 
 /** The view survives a hot reload as the code before wrote it: what this code added starts as in a new session. */
 const current = (v: View): View => ({ ...EMPTY_VIEW, ...v })
-const getView = async ($: Host): Promise<View> => current(await read($, viewAtom))
+const getView = async ($: Host): Promise<View> => {
+  const view = current(await read($, viewAtom))
+  if (view.sessionId !== undefined && view.sessionId === sessionId) lastView = view
+  return view
+}
 const setView = ($: Host, fn: (v: View) => View): Promise<View> => update($, viewAtom, v => fn(current(v)))
 /** Something the person should know that nothing on screen says: a toast, on screen for a while. */
 const tell = ($: Host, text: string) => $.ui.toast(text, { timeoutMs: 8000 })
@@ -1014,9 +1027,10 @@ async function boot($: Host, isInteractive: boolean): Promise<void> {
     await saveAccounts($, accounts)
   }
   const activeId = active.id
-  const sessionId = await $.session.id().catch(() => undefined)
+  const id = await $.session.id().catch(() => undefined)
   await mergeStore($)
-  await setView($, v => ({ ...v, activeId, ...(sessionId === undefined ? {} : { sessionId }) }))
+  await setView($, v => ({ ...v, activeId, ...(id === undefined ? {} : { sessionId: id }) }))
+  sessionId = id
   await checkSwitching($, slot)
   // First, while the session can still move: the rotation waits for it.
   if (isInteractive && shouldConnectAtOpen(await getView($))) {
@@ -1032,6 +1046,40 @@ async function boot($: Host, isInteractive: boolean): Promise<void> {
   }
 }
 
+/**
+ * Carries the view over to the session this process now runs, once a /clear
+ * or a /resume has replaced the one it was set up for: its new id, and the
+ * store merged in. Nothing else is set up again: the login in use, Claude in
+ * Chrome and the timers are the process's, and outlive the session.
+ */
+function adoptSession($: Host): Promise<void> {
+  adopting ??= adopt($).finally(() => {
+    adopting = undefined
+  })
+  return adopting
+}
+
+async function adopt($: Host): Promise<void> {
+  if (sessionId === undefined) return
+  const id = await $.session.id().catch(() => undefined)
+  if (id === undefined || id === sessionId) return
+  const carried = lastView
+  sessionId = id
+  const slot = (await $.env.get('CLAUDE_SECURESTORAGE_CONFIG_DIR')) ?? ''
+  const activeId = (await loadAccounts($)).find(a => a.slot === slot)?.id
+  await setView($, v => {
+    const base = v.accounts.length > 0 ? v : (carried ?? { ...v, ...(activeId === undefined ? {} : { activeId }) })
+    return { ...base, sessionId: id }
+  })
+  await mergeStore($)
+}
+
+/** A draw may not write: one that finds the view set up for no session, or another, has the next adopted from a timer. */
+function adoptSoon($: Host, view: View): void {
+  if (sessionId === undefined || view.sessionId === sessionId) return
+  $.clock.after(0, () => void adoptSession($).catch(error => debug($, `adopt failed: ${String(error)}`)))
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -1040,7 +1088,8 @@ export const register: Register = on => {
       isPaneShown = panes.some(p => p.id === PANE && p.isShown)
     })
     $.clock.every(60_000, () => {
-      void mergeStore($)
+      void adoptSession($)
+        .then(() => mergeStore($))
         .then(() => settlePending($, false))
         .then(() => maybeRotate($))
         .catch(error => debug($, `sync failed: ${String(error)}`))
@@ -1053,20 +1102,26 @@ export const register: Register = on => {
 
   on('session.measure', async ($, e, next) => {
     if (e.changed.includes('rateLimits')) {
-      void onMeasure($, e.rateLimits).catch(error => debug($, `measure failed: ${String(error)}`))
+      void adoptSession($)
+        .then(() => onMeasure($, e.rateLimits))
+        .catch(error => debug($, `measure failed: ${String(error)}`))
     }
     return next(e)
   })
 
   on('classic.StopFailure', async ($, e, next) => {
-    void onStopFailure($, e.error).catch(error => debug($, `stop failure handling failed: ${String(error)}`))
+    void adoptSession($)
+      .then(() => onStopFailure($, e.error))
+      .catch(error => debug($, `stop failure handling failed: ${String(error)}`))
     return next(e)
   }).catch(($, e, next) => next(e))
 
   // Typed at the prompt, /login answers once its sign-in is done; run mid-turn, at once, and the checks find it later.
   on('command.run', { command: 'login' }, async ($, e, next) => {
     const ran = await next(e)
-    void checkActive($).catch(error => debug($, `check after /login failed: ${String(error)}`))
+    void adoptSession($)
+      .then(() => checkActive($))
+      .catch(error => debug($, `check after /login failed: ${String(error)}`))
     return ran
   }).catch(($, e, next) => next(e))
 
@@ -1081,6 +1136,7 @@ export const register: Register = on => {
   on('tool.call', { tool: CHROME_TOOL }, async ($, e, next) => {
     const done = await next(e)
     if (done.deny !== undefined) return done
+    await adoptSession($).catch(error => debug($, `adopt failed: ${String(error)}`))
     const note = await onBrowserCall($, done.isError === true && isNoBrowser(done.text ?? '')).catch(async error => {
       await debug($, `browser call handling failed: ${String(error)}`)
       return undefined
@@ -1096,6 +1152,7 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const view = await getView($)
+    adoptSoon($, view)
     if (view.accounts.length === 0) return next(e)
     return Footer($.ui.resolve(e), view, e.props.modes, await $.clock.now(), actions($))
   })
@@ -1103,11 +1160,13 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     const view = await getView($)
+    adoptSoon($, view)
     return Band($.ui.resolve(e), view, await $.clock.now(), actions($)) ?? next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const view = await getView($)
+    adoptSoon($, view)
     return Pane($.ui.resolve(e), view, await $.clock.now(), actions($))
   })
 }
